@@ -1,0 +1,19 @@
+{
+  "name": "nexus-skills",
+  "description": "Nexus app builder skill bundle with Nexus MCP integration for PingCode Nexus workflows.",
+  "version": "0.1.0",
+  "author": {
+    "name": "PingCode Developer"
+  },
+  "license": "MIT",
+  "keywords": [
+    "nexus",
+    "pingcode",
+    "mcp",
+    "skills"
+  ],
+  "skills": [
+    "./skills/"
+  ],
+  "mcpServers": ".mcp.json"
+}
