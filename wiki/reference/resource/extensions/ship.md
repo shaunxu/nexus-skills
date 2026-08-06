@@ -1,0 +1,28 @@
+---
+title: "产品管理"
+lastUpdated: 2026-07-15T16:37:13.000Z
+---
+
+# 产品管理
+
+在 PingCode 产品管理中，可以添加以下扩展模块来开发你的应用。
+
+## 产品
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 32.34%" /><col style="width: 39.83%" /><col style="width: 27.83%" /></colgroup><thead><tr><th>模块</th><th>定义</th><th>示例</th></tr></thead><tbody><tr><td><a href="/reference/resource/extensions/ship-product-hub">产品 - 首页导航</a></td><td><code>pcm:ship:product:hub</code></td><td><img src="../../../assets/c1740715bf83a575d44e303c18bd436436d359fc.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-product-page">产品 - 组件页面</a></td><td><code>pcm:ship:product:page</code></td><td><img src="../../../assets/13bfcb4e674d2732f350666ce28f4986da21ea8f.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-product-setting">产品 - 产品设置</a></td><td><code>pcm:ship:product:setting</code></td><td><img src="../../../assets/52df385cb13a5c6431eecff2239f1c21a2c58d4c.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-product-background">产品 - 首页后台脚本</a></td><td><code>pcm:ship:product:background</code></td><td></td></tr></tbody></table>
+
+## 需求
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 32.2%" /><col style="width: 39.97%" /><col style="width: 27.83%" /></colgroup><thead><tr><th>模块</th><th>定义</th><th>示例</th></tr></thead><tbody><tr><td><a href="/reference/resource/extensions/ship-idea-area">需求 - 详情导航</a></td><td><code>pcm:ship:idea:area</code></td><td><img src="../../../assets/9949b31f52af7d7c85d1df3157cd89dbda5611ac.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-idea-panel">需求 - 详情面板</a></td><td><code>pcm:ship:idea:panel</code></td><td><img src="../../../assets/b84749c6eaca64c06d57b084c6dcb50172664a7e.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-idea-context">需求 - 详情上下文</a></td><td><code>pcm:ship:idea:context</code></td><td><img src="../../../assets/122810dcac8f3408d4d41e62eb60686236d60b30.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-idea-action">需求 - 详情菜单</a></td><td><code>pcm:ship:idea:action</code></td><td><img src="../../../assets/984cc161e0787d461f8d5d873af969bcb1f531d6.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-idea-background">需求 - 详情后台脚本</a></td><td><code>pcm:ship:idea:background</code></td><td></td></tr></tbody></table>
+
+## 工单
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 31.64%" /><col style="width: 40.4%" /><col style="width: 27.96%" /></colgroup><thead><tr><th>模块</th><th>定义</th><th>示例</th></tr></thead><tbody><tr><td><a href="/reference/resource/extensions/ship-ticket-area">工单 - 详情导航</a></td><td><code>pcm:ship:ticket:area</code></td><td><img src="../../../assets/ddc6156e51cfb35722fdad44f710a9a8e62d96bc.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-ticket-panel">工单 - 详情面板</a></td><td><code>pcm:ship:ticket:panel</code></td><td><img src="../../../assets/5819310f57e7e19d5580caa88ab6952fc938c5b2.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-ticket-context">工单 - 详情上下文</a></td><td><code>pcm:ship:ticket:context</code></td><td><img src="../../../assets/4a0b6c196956a4b12c3576ee0aecf8d1b222434f.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-ticket-action">工单 - 详情菜单</a></td><td><code>pcm:ship:ticket:action</code></td><td><img src="../../../assets/cabd2c5509eafe0c9184ddb0f78d6ec59b1316b6.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-ticket-background">工单 - 详情后台脚本</a></td><td><code>pcm:ship:ticket:background</code></td><td></td></tr></tbody></table>
+
+## 计划
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 32.06%" /><col style="width: 40.4%" /><col style="width: 27.54%" /></colgroup><thead><tr><th>模块</th><th>定义</th><th>示例</th></tr></thead><tbody><tr><td><a href="/reference/resource/extensions/ship-plan-page">计划 - 详情导航</a></td><td><code>pcm:ship:plan:page</code></td><td><img src="../../../assets/dcaa2d85e42d696775f3dd919e28d68b3c13d6a5.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-plan-action">计划 - 详情菜单</a></td><td><code>pcm:ship:plan:action</code></td><td><img src="../../../assets/5b37f8e74d4957e374cd26168267d08fb75aab10.png" alt="image.png" style="max-width: 100%" /></td></tr></tbody></table>
+
+## 基线
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 32.06%" /><col style="width: 40.25%" /><col style="width: 27.69%" /></colgroup><thead><tr><th>模块</th><th>定义</th><th>示例</th></tr></thead><tbody><tr><td><a href="/reference/resource/extensions/ship-baseline-page">基线 - 详情导航</a></td><td><code>pcm:ship:baseline:page</code></td><td><img src="../../../assets/6e1ba83d10c582eb2c4d86dd20eeb343d70235ac.png" alt="image.png" style="max-width: 100%" /></td></tr><tr><td><a href="/reference/resource/extensions/ship-baseline-action">基线 - 详情菜单</a></td><td><code>pcm:ship:baseline:action</code></td><td><img src="../../../assets/131d00020012256149e105c6a2df90865826c5ce.png" alt="image.png" style="max-width: 100%" /></td></tr></tbody></table>

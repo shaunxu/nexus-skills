@@ -1,0 +1,40 @@
+---
+title: "测试管理"
+lastUpdated: 2026-07-17T11:06:11.000Z
+---
+
+# 测试管理
+
+本文档定义测试管理权限点。
+
+## 测试库
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 27.26%" /><col style="width: 72.74%" /></colgroup><thead><tr><th style="text-align: left">名称</th><th style="text-align: left">权限</th></tr></thead><tbody><tr><td style="text-align: left">成员管理</td><td style="text-align: left"><code>pca:testhub:library:manage:member</code></td></tr><tr><td style="text-align: left">标签管理</td><td style="text-align: left"><code>pca:testhub:library:manage:label</code></td></tr><tr><td style="text-align: left">用例模板管理</td><td style="text-align: left"><code>pca:testhub:library:manage:template</code></td></tr><tr><td style="text-align: left">自动化规则管理</td><td style="text-align: left"><code>pca:testhub:library:manage:automation</code></td></tr><tr><td style="text-align: left">回收站管理</td><td style="text-align: left"><code>pca:testhub:library:manage:trash</code></td></tr><tr><td style="text-align: left">组件设置</td><td style="text-align: left"><code>pca:testhub:library:manage:component</code></td></tr><tr><td style="text-align: left">测试用例配置</td><td style="text-align: left"><code>pca:testhub:library:manage:testcase</code></td></tr><tr><td style="text-align: left">评审配置</td><td style="text-align: left"><code>pca:testhub:library:manage:review</code></td></tr><tr><td style="text-align: left">基本设置</td><td style="text-align: left"><code>pca:testhub:library:setting</code></td></tr><tr><td style="text-align: left">复制测试库</td><td style="text-align: left"><code>pca:testhub:library:copy</code></td></tr><tr><td style="text-align: left">移动测试库</td><td style="text-align: left"><code>pca:testhub:library:move</code></td></tr><tr><td style="text-align: left">归档/激活测试库</td><td style="text-align: left"><code>pca:testhub:library:archive</code></td></tr><tr><td style="text-align: left">删除测试库</td><td style="text-align: left"><code>pca:testhub:library:delete</code></td></tr></tbody></table>
+
+## 测试用例
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 27.12%" /><col style="width: 72.88%" /></colgroup><thead><tr><th style="text-align: left">名称</th><th style="text-align: left">权限</th></tr></thead><tbody><tr><td style="text-align: left">新建用例</td><td style="text-align: left"><code>pca:testhub:testcase:create</code></td></tr><tr><td style="text-align: left">编辑用例</td><td style="text-align: left"><code>pca:testhub:testcase:edit</code></td></tr><tr><td style="text-align: left">移动用例</td><td style="text-align: left"><code>pca:testhub:testcase:move</code></td></tr><tr><td style="text-align: left">锁定用例</td><td style="text-align: left"><code>pca:testhub:testcase:lock</code></td></tr><tr><td style="text-align: left">删除/恢复用例</td><td style="text-align: left"><code>pca:testhub:testcase:delete</code></td></tr><tr><td style="text-align: left">导出用例</td><td style="text-align: left"><code>pca:testhub:testcase:export</code></td></tr><tr><td style="text-align: left">变更用例状态</td><td style="text-align: left"><code>pca:testhub:testcase:update:status</code></td></tr><tr><td style="text-align: left">设置维护人</td><td style="text-align: left"><code>pca:testhub:testcase:update:maintainer</code></td></tr><tr><td style="text-align: left">关联产品需求</td><td style="text-align: left"><code>pca:testhub:testcase:link:idea</code></td></tr><tr><td style="text-align: left">关联工作项</td><td style="text-align: left"><code>pca:testhub:testcase:link:workitem</code></td></tr><tr><td style="text-align: left">关联缺陷</td><td style="text-align: left"><code>pca:testhub:testcase:link:defect</code></td></tr><tr><td style="text-align: left">添加共享</td><td style="text-align: left"><code>pca:testhub:testcase:share:add</code></td></tr><tr><td style="text-align: left">移除共享</td><td style="text-align: left"><code>pca:testhub:testcase:share:remove</code></td></tr><tr><td style="text-align: left">用例版本管理</td><td style="text-align: left"><code>pca:testhub:testcase:manage:version</code></td></tr><tr><td style="text-align: left">模块管理</td><td style="text-align: left"><code>pca:testhub:testcase:manage:module</code></td></tr><tr><td style="text-align: left">附件管理</td><td style="text-align: left"><code>pca:testhub:testcase:manage:attachment</code></td></tr><tr><td style="text-align: left">模板管理</td><td style="text-align: left"><code>pca:testhub:testcase:manage:template</code></td></tr></tbody></table>
+
+## 执行用例
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 27.26%" /><col style="width: 72.74%" /></colgroup><thead><tr><th style="text-align: left">名称</th><th style="text-align: left">权限</th></tr></thead><tbody><tr><td style="text-align: left">执行测试用例</td><td style="text-align: left"><code>pca:testhub:testrun:execute</code></td></tr><tr><td style="text-align: left">编辑测试用例</td><td style="text-align: left"><code>pca:testhub:testrun:edit</code></td></tr></tbody></table>
+
+## 测试计划
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 27.26%" /><col style="width: 72.74%" /></colgroup><thead><tr><th style="text-align: left">名称</th><th style="text-align: left">权限</th></tr></thead><tbody><tr><td style="text-align: left">测试计划管理</td><td style="text-align: left"><code>pca:testhub:plan:manage</code></td></tr><tr><td style="text-align: left">复制测试计划</td><td style="text-align: left"><code>pca:testhub:plan:copy</code></td></tr><tr><td style="text-align: left">规划用例</td><td style="text-align: left"><code>pca:testhub:plan:define</code></td></tr><tr><td style="text-align: left">配置报告</td><td style="text-align: left"><code>pca:testhub:plan:report:manage</code></td></tr><tr><td style="text-align: left">导出报告</td><td style="text-align: left"><code>pca:testhub:plan:report:export</code></td></tr><tr><td style="text-align: left">导出用例</td><td style="text-align: left"><code>pca:testhub:plan:export:testcase</code></td></tr><tr><td style="text-align: left">导出缺陷</td><td style="text-align: left"><code>pca:testhub:plan:export:defect</code></td></tr><tr><td style="text-align: left">计划检查更新</td><td style="text-align: left"><code>pca:testhub:plan:update:testcase</code></td></tr></tbody></table>
+
+## 工时
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 27.26%" /><col style="width: 72.74%" /></colgroup><thead><tr><th style="text-align: left">名称</th><th style="text-align: left">权限</th></tr></thead><tbody><tr><td style="text-align: left">登记工时</td><td style="text-align: left"><code>pca:testhub:workload:add</code></td></tr><tr><td style="text-align: left">设置工时</td><td style="text-align: left"><code>pca:testhub:workload:manage</code></td></tr></tbody></table>
+
+## 基线
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 27.26%" /><col style="width: 72.74%" /></colgroup><thead><tr><th style="text-align: left">名称</th><th style="text-align: left">权限</th></tr></thead><tbody><tr><td style="text-align: left">基线管理</td><td style="text-align: left"><code>pca:testhub:baseline:manage</code></td></tr><tr><td style="text-align: left">规划用例</td><td style="text-align: left"><code>pca:testhub:baseline:define</code></td></tr><tr><td style="text-align: left">导出用例</td><td style="text-align: left"><code>pca:testhub:baseline:export</code></td></tr></tbody></table>
+
+## 评审
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 27.26%" /><col style="width: 72.74%" /></colgroup><thead><tr><th style="text-align: left">名称</th><th style="text-align: left">权限</th></tr></thead><tbody><tr><td style="text-align: left">评审管理</td><td style="text-align: left"><code>pca:testhub:review:manage</code></td></tr></tbody></table>
+
+## 报表
+
+<table style="width: 100%; table-layout: fixed"><colgroup><col style="width: 27.26%" /><col style="width: 72.74%" /></colgroup><thead><tr><th style="text-align: left">名称</th><th style="text-align: left">权限</th></tr></thead><tbody><tr><td style="text-align: left">报表管理</td><td style="text-align: left"><code>pca:testhub:report:manage</code></td></tr><tr><td style="text-align: left">导出报表</td><td style="text-align: left"><code>pca:testhub:report:export</code></td></tr></tbody></table>
