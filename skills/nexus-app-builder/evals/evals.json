@@ -1,0 +1,92 @@
+{
+  "skill_name": "nexus-app-builder",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我想做一个 PJM 工作项详情面板，展示来自外部客服系统 API 的相关工单列表。它需要出现在每个工作项详情页右侧，并显示工单标题和状态。请帮我把这个 Nexus 应用建出来。",
+      "expected_output": "Agent 使用工作项详情面板扩展点（pcm:pjm:workitem:panel）创建一个 Nexus Custom UI 应用，编写可运行的前端与 Resolver 后端代码来调用外部 API，完成部署与分发，并在整个过程中与用户正确交互（让用户做选择，不擅自猜测）。",
+      "files": [],
+      "expectations": [
+        "应用使用 PJM 工作项详情面板扩展点，target 为 pcm:pjm:workitem:panel（不是项目页面、仪表盘部件或其他扩展点）",
+        "Agent 在有多个可选模板时让用户选择模板（例如推荐 react-custom-ui），而不是擅自选定",
+        "Agent 描述或提供用于渲染工单列表（标题与状态）的前端代码或方案",
+        "Agent 描述或提供通过 Resolver 调用外部 HTTPS API 的后端代码或方案（例如使用 @pc-nexus/network 的 fetch.request）",
+        "Agent 在 manifest.yaml 的 permissions.external.fetch.backend 中声明外部 API 域名",
+        "Agent 在分发前向用户询问 PingCode 站点域名，且只要求域名（例如 your-domain.pingcode.com），不包含协议、端口或路径",
+        "Agent 不在对话中索要或接收 API 令牌或凭证，而是引导用户在自己的终端运行 nexus login",
+        "Agent 明确或描述应用所需的 permissions.scopes（读取 PingCode 工作项上下文时声明相应 scope，不编造 scope 名称）",
+        "Agent 在继续之前校验前置工具（Node.js 24、Nexus CLI 0.5.1、nexus whoami 登录状态）",
+        "Agent 不使用 Native UI 或臆造的 @pc-nexus/react Nx* 组件，使用 Custom UI（React/Vue/Angular/JavaScript）",
+        "Agent 计划通过 nexus create（或 scripts.create_nexus_app 脚本）创建应用，而不是从零手动写应用文件",
+        "Agent 使用 @pc-nexus/* 包名前缀与 nexus CLI，NEVER 出现 forge、@forge/*、Jira/Confluence 等照搬内容"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "我需要一个 Wiki 文档内容块，让用户在文档里嵌入一个可交互的图表。内容块需要接收配置项：图表类型（柱状图、折线图、饼图）和数据来源 URL。请把它作为一个 Nexus 应用搭建好。",
+      "expected_output": "Agent 创建一个使用 Wiki 文档内容块扩展点（pcm:wiki:document:block）的 Nexus 应用，内容块通过配置接收图表类型与数据来源 URL，实现图表渲染逻辑并完成部署。",
+      "files": [],
+      "expectations": [
+        "应用使用 Wiki 文档内容块扩展点，target 为 pcm:wiki:document:block",
+        "内容块支持图表类型配置参数，覆盖柱状图、折线图、饼图三种取值",
+        "内容块支持数据来源 URL 配置参数",
+        "Agent 在有多个可选模板时让用户选择模板，而不是擅自选定",
+        "Agent 描述或提供根据配置渲染图表的前端代码或方案",
+        "Agent 描述或提供在后端 Resolver 中请求数据来源 URL 的方案，并在 permissions.external.fetch.backend 中声明对应域名（或说明用户需自行配置外部域名）",
+        "Agent 在分发前向用户询问 PingCode 站点域名，且只要求域名",
+        "Agent 在继续之前校验前置工具（Node.js 24、Nexus CLI、登录状态）",
+        "Agent 描述应用所需的 permissions.scopes（如无 PingCode REST 调用可声明为空数组 []，但必须存在该字段）",
+        "Agent 计划通过 nexus create（或 scripts.create_nexus_app 脚本）创建应用，而不是从零手动写应用文件",
+        "Agent 使用 @pc-nexus/* 包名前缀与 nexus CLI，NEVER 照搬 Forge/Confluence 宏或 @forge/* 内容"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "能不能帮我做一个 Nexus 应用，在工作台仪表盘上加一个部件，按优先级分组汇总当前未关闭的 PJM 工作项？nexus 和 node 我都已经装好了，也登录过了。",
+      "expected_output": "Agent 创建一个工作台仪表盘部件，通过 Resolver 拉取未关闭的工作项并按优先级分组汇总。即使用户声称前置条件已就绪，Agent 仍然先进行校验。",
+      "files": [],
+      "expectations": [
+        "应用使用工作台仪表盘部件扩展点，target 为 pcm:global:dashboard:widget",
+        "Agent 即使用户声称已经安装并登录，仍然校验前置条件（node -v、nexus --version、nexus whoami --json）",
+        "Agent 描述或提供通过 Resolver 调用 PingCode REST API 拉取工作项的后端代码或方案（例如使用 @pc-nexus/network 的 api.invoke 配合 JQL/过滤条件）",
+        "Agent 描述或提供按优先级分组/分类工作项的方案",
+        "Agent 在 manifest.yaml 的 permissions.scopes 中声明读取工作项所需的 scope（例如 pcp:read:pjm:workitem），不编造 scope",
+        "Agent 在有多个可选模板时让用户选择模板，而不是擅自选定",
+        "Agent 在分发前向用户询问 PingCode 站点域名，且只要求域名",
+        "Agent 计划通过 nexus create（或 scripts.create_nexus_app 脚本）创建应用，而不是从零手动写应用文件",
+        "前端通过 @pc-nexus/bridge 的 invoke 调用 Resolver，不在前端读取用户凭据或令牌"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "我想做一个 Wiki 内容块，读取 PJM 里分配给当前用户的工作项，然后在 Wiki 页面上用表格展示出来——相当于跨产品的集成应用。请帮我搭建。",
+      "expected_output": "Agent 创建一个 Wiki 文档内容块，通过 Resolver 集成 PJM，正确声明 Wiki 与 PJM 相关权限，处理跨产品调用与部署。",
+      "files": [],
+      "expectations": [
+        "应用使用 Wiki 文档内容块扩展点，target 为 pcm:wiki:document:block",
+        "Agent 明确识别并说明这是一个跨产品（Wiki + PJM）集成应用，需要同时具备两类产品的访问权限",
+        "Agent 在 permissions.scopes 中声明读取 PJM 工作项所需的 scope（例如 pcp:read:pjm:workitem），不编造 scope 名称",
+        "Agent 描述或提供通过 Resolver 调用 PingCode REST API 获取分配给当前用户工作项的后端代码或方案（使用 context.user?.id 作为 userId 以当前用户身份调用 api.invoke）",
+        "Agent 描述或提供在前端以表格形式展示工作项列表的代码或方案",
+        "Agent 在有多个可选模板时让用户选择模板，而不是擅自选定",
+        "Agent 在分发前向用户询问 PingCode 站点域名，且只要求域名",
+        "Agent 计划通过 nexus create（或 scripts.create_nexus_app 脚本）创建应用，而不是从零手动写应用文件",
+        "Agent 不照搬 Atlassian Forge 的跨产品 scope 命名、Jira/Confluence API 或模块名"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "nexus create 一直报错，提示 'Prompts can not be meaningfully rendered'。我想建一个 react-custom-ui 的工作项面板应用，但就是跑不起来，帮帮我！",
+      "expected_output": "Agent 识别该错误是已知问题，告诉用户在自己的交互式终端中运行 nexus create，不尝试手动脚手架应用或绕过该错误。",
+      "files": [],
+      "expectations": [
+        "Agent 将该错误识别为已知/预期问题（CLI 需要交互式终端来渲染提示），而不是一个需要深入排查的新问题",
+        "Agent 告诉用户主要解决方案是在自己的交互式终端中运行 nexus create",
+        "Agent 提供正确的 nexus create 命令及模板名，例如 nexus create <app-name> --template react-custom-ui",
+        "Agent 不尝试通过手动创建 manifest.yaml、package.json、src/、web/ 等文件来绕过该错误",
+        "Agent 在用户成功创建应用后，表示可以继续协助定制代码与部署",
+        "Agent 不在对话中索要或接收 API 令牌或凭证"
+      ]
+    }
+  ]
+}
