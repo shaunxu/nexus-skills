@@ -205,42 +205,44 @@ NEVER 在 Custom UI 中导入 `@pc-nexus/react` 的 `Nx*` 组件期望原生渲�
   ```bash
   python3 -m scripts.deploy_nexus_app \
     --app-dir <app-directory> \
+    --deploy --distribute \
     --site <site-domain> \
     --env development
   ```
 
-- **如果还没有站点域名**：先只部署，再询问站点，再带站点运行完成分发：
+- **如果还没有站点域名**：先只部署，再询问站点，再带站点运行分发：
 
   ```bash
   # 1) 仅部署
   python3 -m scripts.deploy_nexus_app \
     --app-dir <app-directory> \
-    --env development \
-    --deploy-only
+    --deploy \
+    --env development
 
   # 2) 询问用户：“你的 PingCode 站点域名是什么（例如 your-domain.pingcode.com）？”
   #    只传域名，不带协议、端口或路径。
 
-  # 3) 用户回复后，带站点运行完成分发
+  # 3) 用户回复后，带站点运行完成分发；脚本会先通过 nexus deploy list 确认该环境已有部署
   python3 -m scripts.deploy_nexus_app \
     --app-dir <app-directory> \
+    --distribute \
     --site <site-domain> \
-    --env development \
-    --skip-deps --skip-build-web
+    --env development
   ```
 
-部署脚本会自动完成：检查 Node.js / Nexus CLI / 登录状态 → `npm install` → `npm run build-web` → `nexus lint` → 检查/执行 `nexus register` → 确认目标环境 → `nexus deploy --non-interactive -e <env>` → `nexus distribute -s <site> -e <env>`。
+`--deploy` 会自动完成：检查 Node.js / Nexus CLI / 登录状态 → `npm install` → `npm run build-web` → `nexus lint` → 检查/执行 `nexus register` → 确认目标环境 → `nexus deploy --non-interactive -e <env>`。`--distribute` 会先确认目标环境已有部署，再执行 `nexus distribute -s <site> -e <env>`。
 
 常用参数：
 
 | 参数 | 作用 |
 | --- | --- |
 | `--app-dir` | **（必填）** Nexus 应用目录路径 |
-| `--site` | PingCode 站点域名（例如 `your-domain.pingcode.com`）；非 `--deploy-only` 时必填 |
+| `--site` | PingCode 站点域名（例如 `your-domain.pingcode.com`）；使用 `--distribute` 时必填或交互输入 |
 | `--env` | 目标环境，默认 `development`；`staging`/`production` 不可通过 CLI 创建 |
 | `--tag` | 部署指定构建号（来自先前 `nexus build`）；省略时 `nexus deploy` 构建新包 |
 | `--app-name` | 应用未注册时传给 `nexus register` 的名称 |
-| `--deploy-only` | 仅部署，跳过分发 |
+| `--deploy` | 执行构建与部署流程；与 `--distribute` 至少传一个 |
+| `--distribute` | 执行分发流程；会先确认目标环境已有部署；与 `--deploy` 至少传一个 |
 | `--skip-deps` | 跳过 `npm install` |
 | `--skip-build-web` | 跳过 `npm run build-web` |
 | `--skip-env-check` | 跳过目标环境检查/创建 |
@@ -324,7 +326,7 @@ nexus create 需要在交互式终端中运行。请在你的终端执行：
 | 脚本 | 作用 |
 | --- | --- |
 | `scripts/create_nexus_app.py` | 校验前置条件、模板与登录状态，然后运行 `nexus create <name> --template <template>`。`--directory` 设置父目录。运行：`python3 -m scripts.create_nexus_app --template <template> --name <name> [--directory <dir>]` |
-| `scripts/deploy_nexus_app.py` | 完整部署流水线：前置条件检查、`npm install`、`npm run build-web`、`nexus lint`、`nexus register`（如需）、环境确认、`nexus deploy`、`nexus distribute`。运行：`python3 -m scripts.deploy_nexus_app --app-dir <dir> [--site <domain>] [--env development]` |
+| `scripts/deploy_nexus_app.py` | 部署与分发脚本；`--deploy` 执行前置条件检查、`npm install`、`npm run build-web`、`nexus lint`、`nexus register`（如需）、环境确认、`nexus deploy`；`--distribute` 在确认目标环境已有部署后执行 `nexus distribute`。运行：`python3 -m scripts.deploy_nexus_app --app-dir <dir> (--deploy|--distribute|--deploy --distribute) [--site <domain>] [--env development]` |
 | `scripts/search_nexus_docs.py` | 在线检索官方文档（sitemap.xml + 页面正文），返回相关页面标题、URL 与片段。运行：`python3 -m scripts.search_nexus_docs "<关键词>" [--max-pages N] [--json]` |
 
 ## 完成清单
@@ -336,8 +338,8 @@ nexus create 需要在交互式终端中运行。请在你的终端执行：
 - `manifest.yaml` 中 `extensions[].resource` 等于 `resources[].key`，`extensions[].resolver.function` 等于 `functions[].key`，`resources[].path` 指向 `web/main/dist`，且 `permissions.scopes` 存在。
 - 代码已定制；按需安装 `@pc-nexus/*` 固定版本依赖。
 - 前端改动后已运行 `npm run build-web`。
-- **部署脚本由 agent 亲自执行**（而不是只给出手动命令）。
-- 分发时已向用户询问站点域名，并使用 `--site` 运行脚本；站点只传域名。
+- **部署脚本由 agent 亲自执行**（而不是只给出手动命令），并至少传入 `--deploy` 或 `--distribute` 之一。
+- 分发时已向用户询问站点域名，并使用 `--distribute --site` 运行脚本；站点只传域名。
 - 已明确告知用户：分发完成后需要企业管理员在企业管理后台「应用审核」中手动安装；在管理员安装前，应用尚未上线。
 - 如 scope、外部域名或其他权限变化，已重新部署和分发，并提示管理员重新确认安装。
 
