@@ -60,6 +60,8 @@ python3 -m scripts.search_nexus_docs "<关键词>" [--max-pages 3] [--json]
 
 脚本会在线抓取 sitemap → 按 URL 与页面标题/描述打分 → 下载排名靠前页面并返回 `<main>` 正文片段。**无本地缓存**，每次实时检索。NEVER 用记忆或猜测替代检索；检索后引用具体页面 URL 作为依据。
 
+> **注意：** sitemap 中的 URL 路径均为英文关键词（例如 `custom-ui-with-react`、`permissions-content`、`functions-resolvers`），首轮打分依赖 URL 匹配。调用时 **MUST 尽量使用英文关键词**（如 `custom ui react`、`manifest permissions`、`resolver`、`webhook`），而非中文，否则会显著降低命中率。正文片段支持中文显示，仅搜索词需用英文。
+
 ## Agent 工作流
 
 **按顺序完成步骤 0–5。脚本应由你亲自运行，而不是只指示用户运行。**
