@@ -44,6 +44,22 @@ namespace: nexus
 
 NEVER 引用 `samples/` 或 `wiki/` 目录下的内容。
 
+### 在线文档搜索
+
+当本地 `references/` 无法回答以下类型的问题时，MUST 使用 `scripts/search_nexus_docs.py` 在线检索官方文档（数据源：`https://developer.alpha.pingcode.live/sitemap.xml`），而不是凭记忆回答：
+
+- 具体的 CLI 命令参数、字段或版本差异（例如 `nexus variables set`、`nexus ces`、`nexus webtrigger`）。
+- `manifest.yaml` 中不熟悉的字段、权限 scope、exposer、realtime、async 等细节。
+- SDK / Bridge / Capability 的具体 API 签名、返回值或版本行为。
+- 扩展点 `target` 的属性、上下文（context）字段、display 条件。
+- 任何你不确定、可能编造或本地参考资料未覆盖的 Nexus 专属概念。
+
+```bash
+python3 -m scripts.search_nexus_docs "<关键词>" [--max-pages 3] [--json]
+```
+
+脚本会在线抓取 sitemap → 按 URL 与页面标题/描述打分 → 下载排名靠前页面并返回 `<main>` 正文片段。**无本地缓存**，每次实时检索。NEVER 用记忆或猜测替代检索；检索后引用具体页面 URL 作为依据。
+
 ## Agent 工作流
 
 **按顺序完成步骤 0–5。脚本应由你亲自运行，而不是只指示用户运行。**
@@ -307,6 +323,7 @@ nexus create 需要在交互式终端中运行。请在你的终端执行：
 | --- | --- |
 | `scripts/create_nexus_app.py` | 校验前置条件、模板与登录状态，然后运行 `nexus create <name> --template <template>`。`--directory` 设置父目录。运行：`python3 -m scripts.create_nexus_app --template <template> --name <name> [--directory <dir>]` |
 | `scripts/deploy_nexus_app.py` | 完整部署流水线：前置条件检查、`npm install`、`npm run build-web`、`nexus lint`、`nexus register`（如需）、环境确认、`nexus deploy`、`nexus distribute`。运行：`python3 -m scripts.deploy_nexus_app --app-dir <dir> [--site <domain>] [--env development]` |
+| `scripts/search_nexus_docs.py` | 在线检索官方文档（sitemap.xml + 页面正文），返回相关页面标题、URL 与片段。运行：`python3 -m scripts.search_nexus_docs "<关键词>" [--max-pages N] [--json]` |
 
 ## 完成清单
 
@@ -331,6 +348,7 @@ nexus create 需要在交互式终端中运行。请在你的终端执行：
 - **前端改动后忘记 `npm run build-web`**，或把 `resources[].path` 指向源码目录。
 - **照搬 Atlassian Forge 命令/包名/API**（`forge`、`@forge/*`、Jira/Confluence 模块名）。
 - **编造 scope、事件名、扩展点 target、权限点或 REST 路径**。
+- **不查阅文档就回答不熟悉的 CLI/manifest/SDK 细节**——本地 references 未覆盖时 MUST 运行 `scripts.search_nexus_docs` 在线检索。
 - **使用 `manifest.json`/`manifest.yml`、修改 `app.id`、使用 `--no-verify` 或 `sudo` 绕过问题。**
 - **在对话或日志中输出令牌、凭证或个人隐私。**
 
