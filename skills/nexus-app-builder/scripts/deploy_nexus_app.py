@@ -2,14 +2,22 @@
 """
 Nexus App Deployment Automation Script
 
-This script automates the complete Nexus app deployment process:
-1. Validates prerequisites (Node.js, Nexus CLI)
-2. Installs dependencies
-3. Builds the web frontend (npm run build-web)
-4. Validates and lints the app (nexus lint)
-5. Registers app (if needed)
-6. Deploys to a Nexus environment (nexus deploy)
-7. Distributes to a PingCode site (nexus distribute)
+This script automates the Nexus app deployment and distribution process.
+Use --deploy to build and deploy, --distribute to distribute an existing
+deployment, or both together.
+
+With --deploy:
+  1. Validates prerequisites (Node.js, Nexus CLI)
+  2. Installs dependencies
+  3. Builds the web frontend (npm run build-web)
+  4. Validates and lints the app (nexus lint)
+  5. Registers app (if needed)
+  6. Ensures target environment exists
+  7. Deploys to a Nexus environment (nexus deploy)
+
+With --distribute:
+  - Verifies a deployment exists for the target environment (nexus deploy list)
+  - Distributes to a PingCode site (nexus distribute)
 
 References:
   - wiki/guide/started/deploy-and-install.md
@@ -22,7 +30,9 @@ References:
   - wiki/reference/cli/logs.md
 
 Usage:
-    python3 -m scripts.deploy_nexus_app --app-dir /path/to/app --site your-domain.pingcode.com
+    python3 -m scripts.deploy_nexus_app --app-dir /path/to/app --deploy
+    python3 -m scripts.deploy_nexus_app --app-dir /path/to/app --distribute --site your-domain.pingcode.com
+    python3 -m scripts.deploy_nexus_app --app-dir /path/to/app --deploy --distribute --site your-domain.pingcode.com
 """
 
 import argparse
@@ -384,6 +394,52 @@ def deploy_app(app_dir, environment=DEFAULT_ENVIRONMENT, tag=None, no_verify=Fal
     return True
 
 
+def list_deployments(app_dir, limit=50):
+    """
+    Return the list of deployments using `nexus deploy list --json`.
+    Returns an empty list on failure.
+    """
+    try:
+        result = subprocess.run(
+            ["nexus", "deploy", "list", "--json", "-l", str(limit)],
+            cwd=app_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return []
+        data = json.loads(result.stdout)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("deployments") or data.get("data") or []
+    except Exception:
+        return []
+    return []
+
+
+def check_deployment_exists(app_dir, environment):
+    """
+    Verify that a deployment exists for the given environment by checking
+    `nexus deploy list --json`. Returns True if at least one deployment
+    targets the specified environment.
+    """
+    deployments = list_deployments(app_dir)
+    env_lower = environment.lower()
+    for dep in deployments:
+        if not isinstance(dep, dict):
+            continue
+        dep_env = (
+            dep.get("environment")
+            or dep.get("env")
+            or dep.get("environmentName")
+            or dep.get("environment_name")
+        )
+        if dep_env and str(dep_env).lower() == env_lower:
+            return True
+    return False
+
+
 def distribute_app(app_dir, site_url, environment=DEFAULT_ENVIRONMENT):
     """Distribute the deployed app to a PingCode site."""
     print(f"Distributing to {site_url} ({environment})...")
@@ -409,20 +465,24 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Deploy to development and distribute to a PingCode site
-  python3 -m scripts.deploy_nexus_app --app-dir ./my-nexus-app \\
-      --site your-domain.pingcode.com
+  # Build and deploy to development
+  python3 -m scripts.deploy_nexus_app --app-dir ./my-nexus-app --deploy
 
   # Deploy to production using a specific build tag
   python3 -m scripts.deploy_nexus_app --app-dir ./my-nexus-app \\
-      --env production --tag 7d392hf
+      --deploy --env production --tag 7d392hf
 
-  # Deploy only (skip distribution)
-  python3 -m scripts.deploy_nexus_app --app-dir ./my-nexus-app --deploy-only
+  # Distribute an existing deployment to a PingCode site
+  python3 -m scripts.deploy_nexus_app --app-dir ./my-nexus-app \\
+      --distribute --site your-domain.pingcode.com
+
+  # Build, deploy, and distribute in one step
+  python3 -m scripts.deploy_nexus_app --app-dir ./my-nexus-app \\
+      --deploy --distribute --site your-domain.pingcode.com
 
   # Skip npm install and frontend build (fast redeploy after code changes)
   python3 -m scripts.deploy_nexus_app --app-dir ./my-nexus-app \\
-      --site your-domain.pingcode.com --skip-deps --skip-build-web
+      --deploy --distribute --site your-domain.pingcode.com --skip-deps --skip-build-web
         """
     )
 
@@ -446,9 +506,14 @@ Examples:
         help="App name passed to `nexus register` when the app is not yet registered",
     )
     parser.add_argument(
-        "--deploy-only",
+        "--deploy",
         action="store_true",
-        help="Deploy only, skip distribution to a PingCode site",
+        help="Build and deploy the app to the target environment",
+    )
+    parser.add_argument(
+        "--distribute",
+        action="store_true",
+        help="Distribute the deployed app to a PingCode site (requires an existing deployment)",
     )
     parser.add_argument("--skip-deps", action="store_true", help="Skip npm install")
     parser.add_argument(
@@ -481,6 +546,12 @@ Examples:
 
     args = parser.parse_args()
 
+    if not args.deploy and not args.distribute:
+        parser.error("At least one of --deploy or --distribute must be specified")
+
+    if args.distribute and not args.deploy and not args.site:
+        parser.error("--site is required when --distribute is used without --deploy")
+
     app_dir = Path(args.app_dir).resolve()
 
     if not app_dir.exists():
@@ -494,7 +565,13 @@ Examples:
     print_header("Nexus App Deployment Automation")
     print(f"App Directory: {app_dir}")
     print(f"Environment:   {args.env}")
-    if not args.deploy_only:
+    actions = []
+    if args.deploy:
+        actions.append("deploy")
+    if args.distribute:
+        actions.append("distribute")
+    print(f"Actions:       {', '.join(actions)}")
+    if args.distribute:
         print(f"Target Site:   {args.site or '(will prompt)'}")
     if args.tag:
         print(f"Build Tag:     {args.tag}")
@@ -508,69 +585,90 @@ Examples:
     if not check_nexus_login():
         sys.exit(1)
 
-    # Step 2: Install dependencies
-    if not args.skip_deps:
-        print_step(2, "Installing Dependencies")
+    step = 2
+
+    # Build / install / lint / register / env-check only when deploying
+    if args.deploy:
+        # Step 2: Install dependencies
+        if not args.skip_deps:
+            print_step(step, "Installing Dependencies")
+            try:
+                install_dependencies(app_dir)
+            except Exception as e:
+                print_error(f"Failed to install dependencies: {e}")
+                sys.exit(1)
+        else:
+            print_step(step, "Skipping dependency installation")
+        step += 1
+
+        # Step 3: Build frontend assets
+        if not args.skip_build_web:
+            print_step(step, "Building Frontend Assets")
+            try:
+                build_web(app_dir)
+            except Exception as e:
+                print_error(f"Frontend build failed: {e}")
+                sys.exit(1)
+        else:
+            print_step(step, "Skipping frontend build")
+        step += 1
+
+        # Step 4: Lint / validate
+        print_step(step, "Linting and Validating App")
         try:
-            install_dependencies(app_dir)
+            lint_app(app_dir, fix=args.lint_fix)
         except Exception as e:
-            print_error(f"Failed to install dependencies: {e}")
+            print_error(f"Lint failed: {e}")
             sys.exit(1)
-    else:
-        print_step(2, "Skipping dependency installation")
+        step += 1
 
-    # Step 3: Build frontend assets
-    if not args.skip_build_web:
-        print_step(3, "Building Frontend Assets")
+        # Step 5: Registration
+        print_step(step, "Checking App Registration")
+        if check_app_registered(app_dir):
+            print_success("App is already registered")
+        else:
+            if not register_app(app_dir, args.app_name):
+                print_error("App registration required. Please register manually.")
+                sys.exit(1)
+        step += 1
+
+        # Step 6: Ensure target environment exists
+        if not args.skip_env_check:
+            print_step(step, f"Ensuring Environment '{args.env}' Exists")
+            if not ensure_environment(app_dir, args.env):
+                sys.exit(1)
+        else:
+            print_step(step, "Skipping environment check")
+        step += 1
+
+        # Step 7: Deploy
+        print_step(step, f"Deploying to Nexus ({args.env})")
         try:
-            build_web(app_dir)
+            deploy_app(
+                app_dir,
+                environment=args.env,
+                tag=args.tag,
+                no_verify=args.no_verify,
+            )
         except Exception as e:
-            print_error(f"Frontend build failed: {e}")
+            print_error(f"Deployment failed: {e}")
             sys.exit(1)
-    else:
-        print_step(3, "Skipping frontend build")
-
-    # Step 4: Lint / validate
-    print_step(4, "Linting and Validating App")
-    try:
-        lint_app(app_dir, fix=args.lint_fix)
-    except Exception as e:
-        print_error(f"Lint failed: {e}")
-        sys.exit(1)
-
-    # Step 5: Registration
-    print_step(5, "Checking App Registration")
-    if check_app_registered(app_dir):
-        print_success("App is already registered")
-    else:
-        if not register_app(app_dir, args.app_name):
-            print_error("App registration required. Please register manually.")
+        step += 1
+    elif args.distribute:
+        # When distributing only, verify a deployment already exists
+        print_step(step, f"Verifying deployment for '{args.env}'")
+        if not check_deployment_exists(app_dir, args.env):
+            print_error(
+                f"No deployment found for environment '{args.env}'. "
+                f"Run with --deploy first, or check with: nexus deploy list"
+            )
             sys.exit(1)
-
-    # Step 6: Ensure target environment exists
-    if not args.skip_env_check:
-        print_step(6, f"Ensuring Environment '{args.env}' Exists")
-        if not ensure_environment(app_dir, args.env):
-            sys.exit(1)
-    else:
-        print_step(6, "Skipping environment check")
-
-    # Step 7: Deploy
-    print_step(7, f"Deploying to Nexus ({args.env})")
-    try:
-        deploy_app(
-            app_dir,
-            environment=args.env,
-            tag=args.tag,
-            no_verify=args.no_verify,
-        )
-    except Exception as e:
-        print_error(f"Deployment failed: {e}")
-        sys.exit(1)
+        print_success(f"Deployment found for '{args.env}'")
+        step += 1
 
     # Distribution
     distributed = False
-    if not args.deploy_only:
+    if args.distribute:
         site = args.site
         if not site:
             print("\n⚠️  PingCode site URL is required for distribution")
@@ -584,7 +682,7 @@ Examples:
         # Normalize: strip protocol/path so `-s` receives just the host.
         site = re.sub(r"^https?://", "", site).strip().strip("/")
 
-        print_step(8, f"Distributing to {site}")
+        print_step(step, f"Distributing to {site}")
         try:
             distribute_app(app_dir, site, environment=args.env)
             distributed = True
@@ -595,31 +693,31 @@ Examples:
                 f"  nexus distribute -s {site} -e {args.env}"
             )
             sys.exit(1)
+        step += 1
 
     # Logs
     if args.show_logs:
-        log_step = 9 if not args.deploy_only else 8
-        print_step(log_step, "Recent Logs")
+        print_step(step, "Recent Logs")
         try:
             get_app_logs(app_dir, environment=args.env, limit=args.log_limit)
         except Exception as e:
             print_warning(f"Could not fetch logs: {e}")
 
     # Done
-    print_header("Deployment Complete!")
+    print_header("Operation Complete!")
 
-    if args.deploy_only:
+    if args.deploy and not distributed:
         print_success(f"Your Nexus app is deployed to the '{args.env}' environment!")
         print(f"\n{Colors.BOLD}Next step:{Colors.ENDC}")
         print(
-            f"  Distribute it by re-running with --site <your-domain>.pingcode.com"
+            f"  Distribute it by re-running with --distribute --site <your-domain>.pingcode.com"
         )
     elif distributed:
         print_success(
-            f"Your Nexus app is deployed to '{args.env}' and distributed to {args.site}!"
+            f"Your Nexus app is deployed to '{args.env}' and distributed to {site}!"
         )
         print(f"\n{Colors.BOLD}Next steps:{Colors.ENDC}")
-        print(f"  1. Sign in to https://{args.site} as an administrator")
+        print(f"  1. Sign in to https://{site} as an administrator")
         print("  2. Open the enterprise admin console and go to 「应用审核」")
         print("  3. Approve and install the app, then open it in PingCode")
 
@@ -627,10 +725,11 @@ Examples:
     print(f"  View logs:    nexus logs -e {args.env} --limit 50")
     print(f"  List builds:  nexus build list")
     print(f"  List deploys: nexus deploy list")
+    deploy_flag = " --deploy" if args.deploy else ""
     site_flag = f" --site {args.site}" if args.site else ""
     print(
         f"  Redeploy:     python3 -m scripts.deploy_nexus_app "
-        f"--app-dir {app_dir}{site_flag} --env {args.env} --skip-deps --skip-build-web"
+        f"--app-dir {app_dir}{deploy_flag} --distribute{site_flag} --env {args.env} --skip-deps --skip-build-web"
     )
     print()
 
