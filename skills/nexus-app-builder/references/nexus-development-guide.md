@@ -42,7 +42,7 @@ NEVER 使用 `forge` 命令、Atlassian 包名或 Jira/Confluence API 示例。N
 
 #### 3.1.1 安装 Node.js
 
-ALWAYS 使用 Node.js 24.x 或更高版本。文档示例版本为 `v24.14.1`，`@pc-nexus/cli@latest` 要求 `node >=24.0.0`。
+ALWAYS 使用 Node.js 24.x 或更高版本（`@pc-nexus/cli` 要求 `node >=24.0.0`）。
 
 ```shell
 node -v
@@ -56,7 +56,7 @@ npm -v
 安装最新版 CLI：
 
 ```shell
-npm install -g @pc-nexus/cli@latest
+npm install -g @pc-nexus/cli
 nexus --version
 ```
 
@@ -161,30 +161,30 @@ my-first-app/
 
 NEVER 把清单文件命名为 `manifest.json` 或 `manifest.yml`。文档正文出现过 `manifest.json` 和 `manifest.yml` 字样，但示例和架构文档均使用 `manifest.yaml`。ALWAYS 统一使用 `manifest.yaml`。
 
-#### 3.2.4 安装 SDK 固定版本
+#### 3.2.4 安装 SDK
 
-ALWAYS 安装当前已确认的最新稳定版本：
+ALWAYS 安装最新稳定版，不锁版本：
 
 ```shell
-npm install @pc-nexus/core@0.5.0 @pc-nexus/network@0.5.0
-npm install --prefix web/main @pc-nexus/bridge@0.5.0
+npm install @pc-nexus/core @pc-nexus/network
+npm install --prefix web/main @pc-nexus/bridge
 ```
 
 只有实现事件处理函数时才安装：
 
 ```shell
-npm install @pc-nexus/event@0.5.0
+npm install @pc-nexus/event
 ```
 
-| 包 | 版本 |
+| 包 | 安装位置 |
 |---|---|
-| `@pc-nexus/cli` | `0.5.1` |
-| `@pc-nexus/core` | `0.5.0` |
-| `@pc-nexus/bridge` | `0.5.0` |
-| `@pc-nexus/network` | `0.5.0` |
-| `@pc-nexus/event` | `0.5.0` |
+| `@pc-nexus/cli` | 全局 |
+| `@pc-nexus/core` | 根目录 |
+| `@pc-nexus/bridge` | `web/main` |
+| `@pc-nexus/network` | 根目录 |
+| `@pc-nexus/event` | 根目录（仅事件处理函数） |
 
-NEVER 混用未确认版本。如果 npm 安装失败，ALWAYS 先检查 Node.js 版本和网络访问。
+如果 npm 安装失败，ALWAYS 先检查 Node.js 版本和网络访问。
 
 ### 3.3 实现应用
 
@@ -644,7 +644,7 @@ ALWAYS 遵守以下禁止项：
 处理：
 
 ```shell
-npm install -g @pc-nexus/cli@latest
+npm install -g @pc-nexus/cli
 nexus --version
 ```
 
@@ -750,7 +750,7 @@ nexus deploy -e development
 
 | 类别 | 限制 |
 |---|---|
-| Node.js | `>=24.0.0`，文档示例为 `v24.14.1` |
+| Node.js | `>=24.0.0` |
 | 应用包大小 | `128 MB` |
 | Manifest 文件大小 | `256 KB` |
 | 扩展模块数量 | `128` |

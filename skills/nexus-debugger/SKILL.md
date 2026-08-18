@@ -70,11 +70,11 @@ node -v
 nexus --version
 ```
 
-- Node.js 必须为 **24.x 或更高版本**（`@pc-nexus/cli` 要求 `node >=24.0.0`，文档示例版本 `v24.14.1`）。
+- Node.js 必须为 **24.x 或更高版本**（`@pc-nexus/cli` 要求 `node >=24.0.0`）。
 - Nexus CLI 缺失或过旧时安装最新版：
 
 ```bash
-npm install -g @pc-nexus/cli@latest
+npm install -g @pc-nexus/cli
 ```
 
 NEVER 使用 `sudo npm install -g` 或 root 用户安装；遇到权限错误时修复 npm 全局目录权限后重试。
@@ -257,7 +257,7 @@ nexus serve -e development
 
 | 错误 / 症状 | 根因 | 修复 |
 |-----------------|-----------|-----|
-| `command not found: nexus` | CLI 未安装或 npm 全局路径不在 `PATH` | `npm install -g @pc-nexus/cli@latest`，确认 `nexus --version` |
+| `command not found: nexus` | CLI 未安装或 npm 全局路径不在 `PATH` | `npm install -g @pc-nexus/cli`，确认 `nexus --version` |
 | Node 版本过低 / `node` 版本不满足 | Node.js 主版本低于 24 | 安装/切换到 Node.js 24（`nvm install 24 && nvm use 24` 或 `brew install node`） |
 | `nexus deploy` 失败，manifest 校验错误 | `manifest.yaml` 语法或字段错误 | 运行 `nexus lint`，按提示修复；确认文件名为 `manifest.yaml`（非 `.yml`/`.json`），YAML 两空格缩进，引用 key 一致 |
 | 白屏 / Custom UI 白屏 / 资源 404 | 前端未构建就部署，或 `resources[].path` 未指向 `web/main/dist` | `npm run build-web` → `ls web/main/dist` → `nexus deploy -e development --non-interactive`；HMR 下检查 `nexus.json` 的资源 key 与端口 |

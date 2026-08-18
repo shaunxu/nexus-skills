@@ -125,7 +125,7 @@ def check_nexus_cli():
         print_success(f"Nexus CLI {version} found")
         return True
     except Exception:
-        print_error("Nexus CLI not found. Install with: npm install -g @pc-nexus/cli@latest")
+        print_error("Nexus CLI not found. Install with: npm install -g @pc-nexus/cli")
         return False
 
 

@@ -25,7 +25,7 @@ date: '2026-08-10'
 
 应用从零创建、部署、分发、安装的完整流程见 `nexus-development-guide`，本指南不重复这些步骤，但默认你已经：
 
-1. 安装 Node.js 24 与 `@pc-nexus/cli@latest`。
+1. 安装 Node.js 24 与 `@pc-nexus/cli`。
 2. 使用 `nexus create` 创建应用，并选择 `React Custom UI`、`Angular Custom UI`、`Vue Custom UI` 或 `JavaScript Custom UI` 模板之一。
 3. 安装 `@pc-nexus/core`、`@pc-nexus/network`（服务端）和 `@pc-nexus/bridge`（前端）。
 
@@ -153,27 +153,27 @@ Angular / Vue / JavaScript 模板的差异仅在 `web/main/src` 内部文件命�
 
 ### 3.3 依赖版本
 
-ALWAYS 固定到当前已确认版本：
+ALWAYS 安装最新稳定版，不锁版本：
 
-| 包 | 版本 | 安装位置 |
-|---|---|---|
-| `@pc-nexus/cli` | `0.5.1` | 全局 |
-| `@pc-nexus/core` | `0.5.0` | 根目录 |
-| `@pc-nexus/network` | `0.5.0` | 根目录（调用 REST / 外部 API 时） |
-| `@pc-nexus/bridge` | `0.5.0` | `web/main` |
-| `@pc-nexus/event` | `0.5.0` | 根目录（仅事件处理函数） |
-| `@pc-nexus/capabilities` | `0.5.0` | `web/main`（调用产品能力时） |
-| `@pc-nexus/store` | `0.5.0` | `web/main`（对象存储时） |
+| 包 | 安装位置 |
+|---|---|
+| `@pc-nexus/cli` | 全局 |
+| `@pc-nexus/core` | 根目录 |
+| `@pc-nexus/network` | 根目录（调用 REST / 外部 API 时） |
+| `@pc-nexus/bridge` | `web/main` |
+| `@pc-nexus/event` | 根目录（仅事件处理函数） |
+| `@pc-nexus/capabilities` | `web/main`（调用产品能力时） |
+| `@pc-nexus/store` | `web/main`（对象存储时） |
 
 ```shell
-npm install @pc-nexus/core@0.5.0 @pc-nexus/network@0.5.0
-npm install --prefix web/main @pc-nexus/bridge@0.5.0
+npm install @pc-nexus/core @pc-nexus/network
+npm install --prefix web/main @pc-nexus/bridge
 ```
 
 使用产品能力或对象存储时按需安装：
 
 ```shell
-npm install --prefix web/main @pc-nexus/capabilities@0.5.0 @pc-nexus/store@0.5.0
+npm install --prefix web/main @pc-nexus/capabilities @pc-nexus/store
 ```
 
 `store` 从 `@pc-nexus/bridge` 导入（`import { store } from "@pc-nexus/bridge"`），类型与预签名 URL 的服务端实现依赖 `@pc-nexus/storage`（详见 §4.9）。

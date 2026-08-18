@@ -21,7 +21,7 @@ date: '2026-08-10'
 
 在使用本指南前：
 
-- 已阅读 **nexus-development-guide**，完成 Node.js 24、Nexus CLI `0.5.1` 的安装，并能成功 `nexus create`、`nexus deploy`、`nexus distribute`。
+- 已阅读 **nexus-development-guide**，完成 Node.js 24、Nexus CLI 最新版的安装，并能成功 `nexus create`、`nexus deploy`、`nexus distribute`。
 - 已阅读 **nexus-app-manifest-guide**，理解 `manifest.yaml` 中 `functions`、`permissions`、`event`、`storage`、`async`、`exposer`、`remotes`、`endpoints` 的写法。
 - 熟悉 TypeScript 与现代 JavaScript。
 - 后端 SDK 包统一使用 `@pc-nexus/*` 前缀。NEVER 照搬 Atlassian Forge 的 `@forge/api`、`@forge/resolver` 等包名或 API。
@@ -143,10 +143,10 @@ export interface NexusAppContext {
 ### 4.1 安装依赖
 
 ```shell
-npm install @pc-nexus/core@0.5.0
+npm install @pc-nexus/core
 ```
 
-`@pc-nexus/core` 后端版本固定为 `0.5.0`，与最新版 `@pc-nexus/cli` 兼容；其他 `@pc-nexus/*` 包同样安装与该 CLI 兼容的 `0.5.0` 版本。
+所有 `@pc-nexus/*` 包均安装最新稳定版，不锁版本。
 
 ### 4.2 定义 Resolver
 
@@ -499,7 +499,7 @@ event:
 ### 6.1 安装与 manifest 权限
 
 ```shell
-npm install @pc-nexus/network@0.5.0
+npm install @pc-nexus/network
 ```
 
 ```yaml
@@ -709,7 +709,7 @@ permissions:
 ```
 
 ```shell
-npm install @pc-nexus/storage@0.5.0
+npm install @pc-nexus/storage
 ```
 
 ### 9.1 KVS（键值存储）

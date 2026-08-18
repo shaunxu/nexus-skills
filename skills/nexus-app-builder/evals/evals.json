@@ -15,7 +15,7 @@
         "Agent 在分发前向用户询问 PingCode 站点域名，且只要求域名（例如 your-domain.pingcode.com），不包含协议、端口或路径",
         "Agent 不在对话中索要或接收 API 令牌或凭证，而是引导用户在自己的终端运行 nexus login",
         "Agent 明确或描述应用所需的 permissions.scopes（读取 PingCode 工作项上下文时声明相应 scope，不编造 scope 名称）",
-        "Agent 在继续之前校验前置工具（Node.js 24、Nexus CLI 0.5.1、nexus whoami 登录状态）",
+        "Agent 在继续之前校验前置工具（Node.js 24、Nexus CLI 最新版、nexus whoami 登录状态）",
         "Agent 不使用 Native UI 或臆造的 @pc-nexus/react Nx* 组件，使用 Custom UI（React/Vue/Angular/JavaScript）",
         "Agent 计划通过 nexus create（或 scripts.create_nexus_app 脚本）创建应用，而不是从零手动写应用文件",
         "Agent 使用 @pc-nexus/* 包名前缀与 nexus CLI，NEVER 出现 forge、@forge/*、Jira/Confluence 等照搬内容"

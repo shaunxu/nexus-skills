@@ -116,7 +116,7 @@ def create_app(template, app_name, output_dir=None):
     """
     if not validate_prerequisites():
         print("❌ Prerequisites missing. Ensure Node.js v24+ and Nexus CLI are installed.")
-        print("   Install: npm install -g @pc-nexus/cli@latest")
+        print("   Install: npm install -g @pc-nexus/cli")
         return False
 
     is_valid, suggestions = validate_template(template)
@@ -149,7 +149,7 @@ def create_app(template, app_name, output_dir=None):
         print("   Choose a different app name or remove the existing folder.")
         return False
 
-    # `nexus create --help` (v0.5.1) exposes no non-interactive / accept-terms
+    # `nexus create --help` exposes no non-interactive / accept-terms
     # flag, so we rely on --template to skip the template prompt. The command
     # is run from the parent directory and Nexus creates the app subfolder.
     cmd = ["nexus", "create", app_name, "--template", template]

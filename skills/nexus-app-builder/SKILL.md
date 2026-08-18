@@ -70,7 +70,7 @@ python3 -m scripts.search_nexus_docs "<关键词>" [--max-pages 3] [--json]
 
 在做任何其他操作之前，按 `references/nexus-development-guide.md` 检查并安装：
 
-1. **Node.js** — 运行 `node -v`。必须为 Node.js 24.x 或更高版本（`@pc-nexus/cli@latest` 要求 `node >=24.0.0`，文档示例版本 `v24.14.1`）。低于 24 时：
+1. **Node.js** — 运行 `node -v`。必须为 Node.js 24.x 或更高版本（`@pc-nexus/cli` 要求 `node >=24.0.0`）。低于 24 时：
    - **macOS（Homebrew）：** `brew install node`
    - **nvm：** `nvm install 24 && nvm use 24`
    - **fnm：** `fnm install 24 && fnm use 24`
@@ -78,7 +78,7 @@ python3 -m scripts.search_nexus_docs "<关键词>" [--max-pages 3] [--json]
 
 2. **Nexus CLI** — 运行 `nexus --version`。缺失时安装最新版：
    ```bash
-   npm install -g @pc-nexus/cli@latest
+   npm install -g @pc-nexus/cli
    ```
    NEVER 使用 `sudo npm install -g` 或 root 用户安装；如遇权限错误，修复 npm 全局目录权限后重试。
 3. **Nexus 登录** — 运行 `nexus whoami --json`。未登录时：
@@ -157,21 +157,21 @@ Custom UI 模板（React）的典型结构：
 └── tsconfig.json
 ```
 
-固定 SDK 版本（见 `references/nexus-development-guide.md` §3.2.4）：
+所有 SDK 与 CLI 均安装最新版，不锁版本：
 
-| 包 | 版本 | 安装位置 |
-| --- | --- | --- |
-| `@pc-nexus/cli` | `latest`（全局安装，不锁版本） | 全局 |
-| `@pc-nexus/core` | `0.5.0` | 根目录 |
-| `@pc-nexus/network` | `0.5.0` | 根目录（调用 REST/外部 API 时） |
-| `@pc-nexus/bridge` | `0.5.0` | `web/main` |
-| `@pc-nexus/event` | `0.5.0` | 根目录（仅事件处理函数） |
-| `@pc-nexus/capabilities` | `0.5.0` | `web/main`（调用产品能力时） |
-| `@pc-nexus/store` | `0.5.0` | `web/main`（对象存储时） |
+| 包 | 安装位置 |
+| --- | --- |
+| `@pc-nexus/cli` | 全局（`npm install -g`） |
+| `@pc-nexus/core` | 根目录 |
+| `@pc-nexus/network` | 根目录（调用 REST/外部 API 时） |
+| `@pc-nexus/bridge` | `web/main` |
+| `@pc-nexus/event` | 根目录（仅事件处理函数） |
+| `@pc-nexus/capabilities` | `web/main`（调用产品能力时） |
+| `@pc-nexus/store` | `web/main`（对象存储时） |
 
 ```bash
-npm install @pc-nexus/core@0.5.0 @pc-nexus/network@0.5.0
-npm install --prefix web/main @pc-nexus/bridge@0.5.0
+npm install @pc-nexus/core @pc-nexus/network
+npm install --prefix web/main @pc-nexus/bridge
 ```
 
 #### Custom UI 与 Native UI——不要混淆
@@ -364,7 +364,7 @@ nexus create 需要在交互式终端中运行。请在你的终端执行：
 - **后端隧道**：`nexus serve -e development`（可加 `--function <key>` 只调试指定函数；IDE 断点用 `nexus serve --debug`，Node 调试端口 9229）。
 - **前端 HMR**：启动前端 Dev Server，在应用根目录创建 `nexus.json`，在 `serve.resources.<key>.port` 中填写实际端口（React/Vite 常用 `5173`，Angular 常用 `4200`），key 必须与 `manifest.yaml` 的 `resources[].key` 一致。
 - **查看日志**：`nexus logs`、`nexus logs --grouped`、`nexus logs --invocation <id>`、`nexus logs --since 2d`、`nexus logs -e development --verbose`。`nexus logs` 仅支持开发环境；Staging/Production 不支持 CLI 拉取日志。前端 `console.*` 只出现在浏览器开发者工具中，NEVER 期待它们出现在 `nexus logs`。
-- **`command not found: nexus`**：`npm install -g @pc-nexus/cli@latest`，并检查 npm 全局路径是否在 `PATH` 中。
+- **`command not found: nexus`**：`npm install -g @pc-nexus/cli`，并检查 npm 全局路径是否在 `PATH` 中。
 - **Node 版本过低**：安装/切换到 Node.js 24。
 - **Manifest 校验失败**：确认文件名 `manifest.yaml`、YAML 两空格缩进、引用 key 一致、`resources[].path` 为 `web/main/dist`、`permissions.scopes` 存在；NEVER 用 `nexus build --no-verify` 跳过。
 - **页面空白或资源 404**：`npm run build-web` 后重新 `nexus deploy -e development`；HMR 下检查 `nexus.json` 的资源 key 与端口。
