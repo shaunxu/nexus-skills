@@ -42,7 +42,7 @@ NEVER 使用 `forge` 命令、Atlassian 包名或 Jira/Confluence API 示例。N
 
 #### 3.1.1 安装 Node.js
 
-ALWAYS 使用 Node.js 24.x 或更高版本。文档示例版本为 `v24.14.1`，`@pc-nexus/cli@0.5.1` 要求 `node >=24.0.0`。
+ALWAYS 使用 Node.js 24.x 或更高版本。文档示例版本为 `v24.14.1`，`@pc-nexus/cli@latest` 要求 `node >=24.0.0`。
 
 ```shell
 node -v
@@ -53,17 +53,11 @@ npm -v
 
 #### 3.1.2 安装 Nexus CLI
 
-ALWAYS 固定 CLI 到当前已确认版本 `0.5.1`：
+安装最新版 CLI：
 
 ```shell
-npm install -g @pc-nexus/cli@0.5.1
+npm install -g @pc-nexus/cli@latest
 nexus --version
-```
-
-期望输出：
-
-```text
-0.5.1
 ```
 
 查看可用命令：
@@ -650,7 +644,7 @@ ALWAYS 遵守以下禁止项：
 处理：
 
 ```shell
-npm install -g @pc-nexus/cli@0.5.1
+npm install -g @pc-nexus/cli@latest
 nexus --version
 ```
 

@@ -146,7 +146,7 @@ export interface NexusAppContext {
 npm install @pc-nexus/core@0.5.0
 ```
 
-`@pc-nexus/core` 后端版本固定为 `0.5.0`，与 `@pc-nexus/cli@0.5.1` 兼容；其他 `@pc-nexus/*` 包同样安装与该 CLI 兼容的 `0.5.0` 版本。
+`@pc-nexus/core` 后端版本固定为 `0.5.0`，与最新版 `@pc-nexus/cli` 兼容；其他 `@pc-nexus/*` 包同样安装与该 CLI 兼容的 `0.5.0` 版本。
 
 ### 4.2 定义 Resolver
 

@@ -25,7 +25,7 @@ date: '2026-08-10'
 
 应用从零创建、部署、分发、安装的完整流程见 `nexus-development-guide`，本指南不重复这些步骤，但默认你已经：
 
-1. 安装 Node.js 24 与 `@pc-nexus/cli@0.5.1`。
+1. 安装 Node.js 24 与 `@pc-nexus/cli@latest`。
 2. 使用 `nexus create` 创建应用，并选择 `React Custom UI`、`Angular Custom UI`、`Vue Custom UI` 或 `JavaScript Custom UI` 模板之一。
 3. 安装 `@pc-nexus/core`、`@pc-nexus/network`（服务端）和 `@pc-nexus/bridge`（前端）。
 

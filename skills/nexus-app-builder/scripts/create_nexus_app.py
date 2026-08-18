@@ -116,7 +116,7 @@ def create_app(template, app_name, output_dir=None):
     """
     if not validate_prerequisites():
         print("❌ Prerequisites missing. Ensure Node.js v24+ and Nexus CLI are installed.")
-        print("   Install: npm install -g @pc-nexus/cli@0.5.1")
+        print("   Install: npm install -g @pc-nexus/cli@latest")
         return False
 
     is_valid, suggestions = validate_template(template)
