@@ -1,0 +1,159 @@
+---
+description: 检测在 Nexus 应用中将 display 条件误用作授权控制的问题
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 的 `display` 条件仅在前端控制 UI 元素是否可见，**不提供任何授权**。攻击者可以通过浏览器 DevTools 篡改条件，或直接通过 `@pc-nexus/bridge` 的 `invoke()` 调用对应 Resolver。
+- 官方文档明确说明：display conditions 为 CLIENT-SIDE ONLY，不是安全边界。
+- 相关 CWE：CWE-862（缺失授权）、CWE-656（依赖隐蔽性安全）、CWE-602（客户端实施服务端安全）。
+
+安全缺口
+
+```
+display 条件："仅当 hasPermission 时显示管理面板"
+
+普通用户视角：                         攻击者视角：
+┌─────────────────────┐              ┌─────────────────────┐
+│  常规 UI            │              │  直接 invoke()       │
+│  (管理入口隐藏)     │              │  调用 Resolver       │
+└─────────────────────┘              └─────────────────────┘
+         ↓                                    ↓
+   看不到管理功能                      直接调用管理 Resolver
+                                       —— UI 被绕过！
+```
+
+脆弱模式
+
+```yaml
+# manifest.yaml - display 条件给人虚假的安全感
+extensions:
+  - key: admin-panel
+    target: pcm:pjm:project:setting
+    resource: main
+    resolver:
+      function: resolver
+    display:
+      and:
+        - hasPermission: pca:global:app:manage:approve
+      # ↑ 仅在前端隐藏入口！
+```
+
+```typescript
+// 脆弱 - Resolver 误以为 display 条件提供了授权
+resolver.define<Record<string, never>, unknown>(
+  'getAdminConfig',
+  async (context) => {
+    // 没有任何授权检查！以为只有管理员能调用，
+    // 因为 display 条件在前端隐藏了 UI。
+    return await kvs.get('admin-config', { secret: true });
+  },
+);
+
+// 脆弱 - 误以为「按钮只对管理员显示」就安全
+resolver.define<Record<string, never>, void>(
+  'deleteAllData',
+  async () => {
+    // 「只有管理员能看到删除按钮」并非授权！
+    await dangerousDeleteOperation();
+  },
+);
+```
+
+安全模式
+
+```typescript
+import { Resolver, authorize, app } from '@pc-nexus/core';
+
+const resolver = new Resolver();
+
+// 安全 - Resolver 中独立做授权，与 display 条件无关
+resolver.define<Record<string, never>, unknown>(
+  'getAdminConfig',
+  async (context) => {
+    const perms = await authorize.getUserPermissions(
+      'global',
+      undefined,
+      context.user!.id,
+    );
+    const isAdmin = perms.some(p => p.key === 'pca:global:app:manage:approve');
+    if (!isAdmin) {
+      throw new Error('Admin access required');
+    }
+    return await kvs.get('admin-config', { secret: true });
+  },
+);
+
+// 安全 - 完整的权限校验
+resolver.define<{ projectId: string }, void>(
+  'deleteProjectData',
+  async (context, payload) => {
+    const perms = await authorize.getUserPermissions(
+      'project',
+      payload.projectId,
+      context.user!.id,
+    );
+    const canManage = perms.some(p => p.key === 'pca:pjm:project:delete');
+    if (!canManage) {
+      throw new Error('Insufficient permissions');
+    }
+    await dangerousDeleteOperation(payload.projectId);
+  },
+);
+```
+
+检测清单
+
+- [ ] 在 `manifest.yaml` 中找出所有带 `display` 块的扩展。
+- [ ] 对每个条件渲染的扩展，定位其关联的 Resolver / endpoint / function。
+- [ ] 检查这些 Resolver 是否有独立的授权检查。
+- [ ] 标记任何假设 display 条件提供了安全性的 Resolver。
+- [ ] 寻找命名/UI 位置暗示管理员专用但缺少服务端授权的 Resolver（如 `admin*`、`deleteAll*`、`getSecret*`、`export*`）。
+
+绕过演示
+
+```typescript
+// 攻击者可以在 Custom UI 控制台或恶意页面中直接调用隐藏的 Resolver：
+import { invoke } from '@pc-nexus/bridge';
+
+// 即使 UI 被 display 条件隐藏，此调用仍然生效！
+const adminConfig = await invoke('getAdminConfig', {});
+console.log(adminConfig); // 敏感数据被暴露
+```
+
+display 条件类型（均可绕过）
+
+```yaml
+display:
+  # 以下条件都只隐藏 UI，不提供授权：
+  and:
+    - hasPermission: pca:global:app:manage:approve
+    - isTeamOwner: true
+    - isLoggedIn: true
+  # 各扩展点的上下文条件（如工作项类型、项目角色等）同样仅在前端生效
+```
+
+PoC / 测试线索
+
+- 找到一个带 display 条件的扩展。
+- 以不满足条件的用户，直接通过 Bridge `invoke('resolverName', payload)` 调用。
+- 验证 Resolver 是否返回数据或执行操作。
+- 以普通用户身份通过直接调用测试管理员专用功能。
+
+修复建议（咨询）
+
+- 将 display 条件视为纯粹的 UX 便利性，用于改善界面展示。
+- 在每个 Resolver 中实现完整授权，与 UI 可见性无关。
+- 使用 `context.user.id` + `authorize.getUserPermissions()` 校验权限。
+- 在文档中标注：display 条件只能用于 UX，不是授权。
+- 对条件模块对应的 Resolver 加上注释警示。
+
+报告指南
+
+- 列出所有带 display 条件的模块及其 Resolver。
+- 说明对应 Resolver 中缺失的授权。
+- 提供使用直接 `invoke()` 的绕过 PoC。
+- 解释未授权访问的影响。
+- 映射到 CWE-862、CWE-656、CWE-602。

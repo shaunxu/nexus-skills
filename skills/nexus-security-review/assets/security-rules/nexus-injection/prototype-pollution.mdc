@@ -1,0 +1,135 @@
+---
+description: 检测 Nexus 应用中的原型污染漏洞及其权限提升/跨租户风险
+globs:
+alwaysApply: false
+---
+
+背景
+
+- 与其他 JavaScript 运行时相同，Nexus 后端与 Custom UI 中存在的原型污染可让攻击者向 `Object.prototype` 注入属性，影响后续代码逻辑、修改 fetch/`api.invoke` 选项，并可能在 FaaS warm start 场景下影响后续调用。
+- 相关 CWE：CWE-1321（对象原型属性的修改控制不当）。
+
+范围与信号
+
+- 来源：JSON 解析、对象合并、query/body 解析、反序列化、Webhook 事件 body、远程配置。
+- 汇聚点：对象属性赋值、深度合并工具、展开不可信键的对象、CES 实体写入、`Object.assign`。
+- 红旗：
+  - 用户输入的属性路径中出现 `__proto__`、`prototype`、`constructor`。
+  - 无原型守卫的深度合并（lodash < 4.17.21、`jQuery.extend`、手写 `deepMerge`、`mout/object/merge` 等）。
+  - 直接对不可信对象 `Object.assign(target, userInput)`。
+  - 使用括号表示法动态赋值：`obj[payload.key] = payload.value`。
+
+潜在影响
+
+- 修改后续请求中的 `api.invoke` 选项（headers、as、userId），造成以应用身份调用或冒用其他用户（取决于运行时实现）。
+- 污染模块级缓存，导致跨租户/跨用户数据泄漏。
+- 影响 CES 条件构造器的字段解析、KVS/NOS key 生成逻辑。
+- 在 Custom UI 中绕过前端校验或影响 Bridge 调用序列化。
+
+脆弱模式
+
+```typescript
+// 脆弱 - 无守卫地合并用户输入
+const config: Record<string, unknown> = {};
+Object.assign(config, JSON.parse(payload.settings));
+
+// 脆弱 - 深度合并不可信数据
+import merge from 'lodash.merge'; // 旧版本存在 CVE
+const merged = merge(defaults, userInput);
+
+// 脆弱 - 括号表示法使用用户键
+obj[payload.key] = payload.value; // key 可以是 "__proto__"
+
+// 脆弱 - 递归对象赋值
+function deepSet(obj: any, path: string, value: unknown) {
+  const keys = path.split('.');
+  let current = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    current = current[keys[i]] = current[keys[i]] || {};
+  }
+  current[keys[keys.length - 1]] = value;
+}
+deepSet({}, payload.path, payload.value); // path = "__proto__.polluted"
+
+// 脆弱 - CES 写入时直接展开输入
+await ces.entity('settings').insert({ ...payload.data });
+```
+
+安全模式
+
+```typescript
+// 安全 - 拒绝危险键
+function safeSet(obj: Record<string, unknown>, key: string, value: unknown) {
+  if (['__proto__', 'prototype', 'constructor'].includes(key)) {
+    throw new Error('Invalid key');
+  }
+  obj[key] = value;
+}
+
+// 安全 - 使用无原型对象
+const config = Object.create(null);
+Object.assign(config, sanitizedInput);
+
+// 安全 - 使用 Map 存储动态键
+const userSettings = new Map<string, unknown>();
+userSettings.set(payload.key, payload.value);
+
+// 安全 - zod strict 模式 allowlist 字段
+import { z } from 'zod';
+const SettingsSchema = z.object({
+  theme: z.string(),
+  language: z.string(),
+}).strict(); // 拒绝未知键
+const settings = SettingsSchema.parse(payload.settings);
+
+// 安全 - 使用带原型守卫的现代合并库
+import merge from 'lodash.merge'; // v4.17.21+
+// 仍建议显式键校验
+```
+
+检测清单
+
+- [ ] 搜索 `__proto__`、`constructor.prototype`、`prototype[` 等访问。
+- [ ] 查找 `Object.assign`、对象展开（`{...userInput}`）是否处理不可信来源。
+- [ ] 检查深度合并工具及其版本（package.json / lockfile）。
+- [ ] 识别使用动态键的括号表示法。
+- [ ] 查找递归对象遍历/赋值函数。
+- [ ] 检查 `JSON.parse` 后是否进行 schema 校验。
+- [ ] 审查 CES insert/update 中是否将 payload 直接展开。
+
+PoC / 测试线索
+
+```javascript
+// 原型污染测试载荷
+const maliciousPayload = JSON.parse('{"__proto__":{"polluted":true}}');
+
+// 或通过 constructor
+const payload2 = JSON.parse('{"constructor":{"prototype":{"polluted":true}}}');
+
+// 验证污染
+console.log({}.polluted); // 应为 undefined；若为 true 则存在污染
+```
+
+测试步骤：
+
+1. 以攻击者身份向 Resolver/Webhook 发送上述载荷。
+2. 紧接着以另一用户/租户身份调用同一函数。
+3. 检查 `{}.polluted` 是否为 true，或全局/模块状态是否被修改。
+4. 在 FaaS 环境多次重复测试以触发 warm start 复用。
+
+修复建议（咨询）
+
+- 在入口 schema 校验中拒绝 `__proto__`、`prototype`、`constructor` 键。
+- 使用 zod/joi 等 schema 校验器并启用 strict/未知键拒绝。
+- 当不需要原型时使用 `Object.create(null)` 创建对象。
+- 使用 Map/Set 存储动态键。
+- 升级 lodash 至 ≥4.17.21 及其他合并库的修复版本。
+- 敏感上下文中冻结原型：`Object.freeze(Object.prototype)`（需评估兼容性）。
+- 避免直接将用户输入展开后写入 CES；使用 schema 选取白名单字段。
+
+报告指南
+
+- 记录合并/赋值模式及不可信数据来源。
+- 解释对 `api.invoke` 选项、CES 写入、warm start 缓存的潜在影响。
+- 提供展示污染的 PoC 载荷。
+- 映射到 CWE-1321；注明受影响的库版本。

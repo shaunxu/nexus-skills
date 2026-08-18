@@ -1,0 +1,33 @@
+---
+description: Nexus 杂项安全规则索引。对 nexus-misc/** 自动挂载
+globs:
+  - nexus-misc/**
+alwaysApply: false
+---
+
+- 范围：软件成分分析（SCA）、依赖漏洞审查以及其他未被主要类别覆盖的安全关注点。
+
+子规则
+
+- 软件成分分析 → `@nexus-misc/software-composition.mdc`
+
+杂项关键关注点
+
+- 包含已知漏洞（CVE）的依赖。
+- 过旧或停止维护的包（可能与原型污染、SSRF、JWT 绕过等相关）。
+- 外部 AI/LLM 集成的合规风险（数据出境、提示注入）。
+- 未公开披露的第三方集成处理用户数据。
+- Nexus 不允许使用 `@forge/*` 包；若发现应视为错误依赖。
+- 不建议在 Nexus 应用中使用原生模块（`.node`）或依赖系统二进制；由于 FaaS 运行时未对原生模块/系统二进制做完整测试，可能导致部署或运行失败，且增加供应链与攻击面风险。
+
+检测启发式
+
+- 对 `package.json` / `package-lock.json` 运行 SCA 工具（`npm audit`、Snyk、OSV-Scanner、Trivy）。
+- 检查是否引入 `@forge/*`、Atlassian 相关包（应使用 `@pc-nexus/*`）。
+- 审查代码与文档中与 AI/LLM 相关的导入或调用。
+- 识别所有外部服务并在隐私/安全声明中披露。
+
+CWE 参考
+
+- CWE-1104：使用未维护的第三方组件
+- CWE-1395：依赖存在漏洞的第三方组件

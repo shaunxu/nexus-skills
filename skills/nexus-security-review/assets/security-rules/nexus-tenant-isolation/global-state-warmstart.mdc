@@ -1,0 +1,173 @@
+---
+description: 检测 Nexus FaaS warm start 中全局状态导致的租户隔离风险
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 后端运行在 serverless FaaS 中，运行时实例可能被复用（warm start）。模块级变量和全局状态在不同调用之间持久化，这些调用可能来自不同企业/用户。
+- 相关 CWE：CWE-668（将资源暴露到错误的控制域）、CWE-1189（共享资源隔离不当）。
+- 对在多企业环境中发布的应用尤为关键。
+
+Warm Start 行为
+
+```
+┌─────────────────────────────────────────┐
+│           FaaS 容器/实例                │
+│  ┌───────────────────────────────────┐  │
+│  │       Warm Start 复用             │  │
+│  │  ┌─────────────────────────────┐  │  │
+│  │  │ 调用 1（企业 A / 用户 Alice）│  │  │
+│  │  │ 写入：globalCache.data      │  │  │
+│  │  └─────────────────────────────┘  │  │
+│  │              ↓                     │  │
+│  │  ┌─────────────────────────────┐  │  │
+│  │  │ 调用 2（企业 B / 用户 Bob） │  │  │
+│  │  │ 读取：globalCache.data      │  │  │← 租户泄漏！
+│  │  └─────────────────────────────┘  │  │
+│  └───────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+```
+
+范围与信号
+
+- 危险模式：
+  - 处理器函数之外的模块级变量。
+  - 未按租户/用户作用域化的缓存（Map、对象、LRU）。
+  - 运行时被修改的全局配置对象。
+  - 跨租户共享的特性开关缓存。
+  - 保存「当前用户/请求」的单例。
+- 来源：任何企业/用户特定数据（用户信息、配置、API 响应、NIT、token、Webhook 签名缓存）。
+- 风险：企业 A 的数据被企业 B 在后续调用中读取，或攻击者通过污染全局影响其他用户。
+
+脆弱模式
+
+```typescript
+// 脆弱 - 模块级缓存未做租户作用域
+const issueCache: Record<string, unknown> = {}; // 在 warm start 间持久化！
+
+export default async function handler(context: NexusAppContext, payload: { id: string }) {
+  const id = payload.id;
+  if (!issueCache[id]) {
+    issueCache[id] = await fetchIssue(id);
+  }
+  return issueCache[id]; // 可能返回其他企业的数据
+}
+
+// 脆弱 - 全局配置
+let appConfig: unknown = null;
+
+export async function getConfig(context: NexusAppContext) {
+  if (!appConfig) {
+    appConfig = await kvs.get(`config-${context.team.id}`); // 企业 A 的配置
+  }
+  return appConfig; // 企业 B 拿到企业 A 的配置！
+}
+
+// 脆弱 - 当前用户单例
+let currentUser: { id: string } | null = null;
+
+export async function getCurrentUser(context: NexusAppContext) {
+  if (!currentUser) {
+    currentUser = { id: context.user!.id };
+  }
+  return currentUser; // 后续调用返回错误的用户！
+}
+
+// 脆弱 - 全局保存 NIT/Token
+let cachedNit: string | null = null;
+export async function callPartner(context: NexusAppContext, payload: unknown) {
+  if (!cachedNit) cachedNit = await fetchAppToken();
+  return fetch.request('https://partner.example.com/api', {
+    headers: { Authorization: `Bearer ${cachedNit}` },
+    body: JSON.stringify(payload),
+  });
+}
+```
+
+安全模式
+
+```typescript
+// 安全 - 每次调用使用新鲜状态
+export default async function handler(context: NexusAppContext, payload: { id: string }) {
+  // 所有状态在函数内部创建
+  const config = await kvs.get(`config-${context.team.id}`, { secret: true });
+  const user = await fetchUser(context.user!.id);
+  return processRequest(payload, { config, user });
+}
+
+// 安全 - 若必须缓存，以 team/installation/user 作为复合键
+const cache = new Map<string, { data: unknown; expiresAt: number }>();
+
+function cacheKey(context: NexusAppContext, resourceId: string) {
+  return `${context.installation.id}:${context.team.id}:${resourceId}`;
+}
+
+export default async function handler(context: NexusAppContext, payload: { id: string }) {
+  const key = cacheKey(context, payload.id);
+  const now = Date.now();
+  const hit = cache.get(key);
+  if (hit && hit.expiresAt > now) return hit.data;
+
+  const data = await fetchIssue(payload.id);
+  cache.set(key, { data, expiresAt: now + 60_000 });
+  return data;
+}
+
+// 安全 - 使用 WeakMap<context, …>，但仍建议限制大小与 TTL
+const perContextCache = new WeakMap<object, Map<string, unknown>>();
+
+function getCache(context: NexusAppContext) {
+  if (!perContextCache.has(context as object)) {
+    perContextCache.set(context as object, new Map());
+  }
+  return perContextCache.get(context as object)!;
+}
+
+// 安全 - 不缓存令牌；每次调用从平台/安全存储获取
+export async function callPartner(context: NexusAppContext, payload: unknown) {
+  return remote.invoke('partner-service', {
+    path: '/api',
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+```
+
+检测清单
+
+- [ ] 搜索模块级 `const`、`let`、`var` 声明（函数之外）。
+- [ ] 识别作为缓存使用但键中没有团队/安装/用户标识的对象/Map。
+- [ ] 查找保存租户特定数据的单例模式。
+- [ ] 检查对 `global`、`globalThis` 的修改。
+- [ ] 审查首次访问时缓存的初始化模式。
+- [ ] 查找未按上下文感知的记忆化（memoization）。
+- [ ] 检查是否存在将 `context.user`/令牌/NIT 保存到模块级变量的情况。
+- [ ] 检查异步队列消费者是否依赖全局状态（任务可能在任意实例上执行）。
+
+PoC / 测试线索
+
+- 以企业 A 身份发起请求填充缓存，立即以企业 B 身份发起请求，检查是否返回企业 A 的数据。
+- 在全局变量中保存唯一标记，验证其在后续请求中是否持久存在。
+- 快速连续发送不同用户/企业的请求以最大化 warm start 复用概率。
+- 在两个不同浏览器/账号中同时调用同一 Resolver，检查返回是否串号。
+- 若部署到多实例环境，重复测试以覆盖冷/热启动组合。
+
+修复建议（咨询）
+
+- 始终在缓存键中包含租户标识（`context.installation.id`、`context.team.id`），必要时再包含 `context.user.id`。
+- 优先使用每次调用内的状态，而非模块级缓存。
+- 不缓存令牌/NIT；每次从平台或 KVS secret 获取。
+- 对必须使用的缓存设置 TTL 与最大容量，防止内存无限增长和长期数据残留。
+- 不要在模块级保存与单次请求/用户相关的数据。
+- 异步队列任务应自带最小必要的授权信息（如创建者 userId、团队 id），消费者执行时再次校验，且不要依赖模块级状态。
+- 对于真正的全局公共数据（如特性开关），从不可变的配置或环境变量读取，不要在运行时修改。
+
+报告指南
+
+- 记录模块级变量及其内容。
+- 解释 warm start 复用导致数据泄漏的场景。
+- 识别可能暴露的租户数据类型。
+- 提供多租户测试场景。
+- 映射到 CWE-668、CWE-1189。

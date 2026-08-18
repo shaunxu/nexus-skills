@@ -1,0 +1,159 @@
+---
+description: 检测 Nexus 应用中的查询/路径/键注入（含外部 SQL、CES 条件、api.invoke 路径与 NOS key）
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 平台本身**不提供** SQL 数据库 API。但应用在以下场景仍可能产生注入：
+  1. 通过 `fetch.request` 或 `remote.invoke` 调用自建/第三方服务时，将用户输入拼接进 SQL 语句或查询参数（远端 SQL 注入）。
+  2. 使用 CES 条件构造器时，字段名、排序键、操作符来自用户输入（条件注入/越权查询）。
+  3. 在 `api.invoke` 路径或查询字符串中拼接用户输入（路径遍历、查询参数注入）。
+  4. NOS 对象 key 由用户输入构造，未做前缀/授权校验（对象越权、路径遍历）。
+  5. KVS key 由用户输入拼接，导致跨用户/跨资源越权读取。
+- 相关 CWE：CWE-89（SQL 注入）、CWE-943（数据查询逻辑注入）、CWE-22（路径遍历）、CWE-639（IDOR）。
+
+范围与信号
+
+- 危险 API：
+  - 远端 SQL：`fetch.request(url, { body: JSON.stringify({ query: `...${input}...` }) })`、GraphQL `query` 字符串拼接。
+  - CES：`ces.entity<T>().find(cb => cb.field($USER_INPUT).eq(...))`、`sort`、`projection`、`hint` 字段来自输入。
+  - `api.invoke`：路径/查询字符串拼接。
+  - NOS：`createUploadUrl`/`createDownloadUrl`/`delete`/`getMetadata` 的 key 来自用户输入。
+  - KVS：`get/set/delete` 的 key 由用户输入拼接。
+- 来源：Resolver payload、Webhook body、事件 payload、URL 查询参数、远程服务响应。
+
+脆弱模式
+
+```typescript
+// 脆弱 - 将用户输入直接传入远端 GraphQL 查询
+const q = `{ user(id: "${payload.userId}") { email } }`;
+await fetch.request('https://partner.example.com/graphql', {
+  method: 'POST',
+  body: JSON.stringify({ query: q }),
+});
+
+// 脆弱 - CES 字段名来自用户输入（可能访问 _created_by 等元数据或绕过过滤）
+const results = await ces.entity<WorkitemEntity>('workitems')
+  .find(cb => cb.field(payload.sortField as any).eq(payload.value));
+// payload.sortField = "_created_by" 或 "_is_deleted"
+
+// 脆弱 - 排序键/投影字段来自用户输入
+await ces.entity<WorkitemEntity>('workitems').find(undefined, {
+  sort: [{ propertyKey: payload.sortBy, order: Direction.ascending }],
+  projection: payload.fields,
+});
+
+// 脆弱 - api.invoke 路径/查询拼接
+const qs = `?assignee=${payload.assignee}&status=${payload.status}`;
+await api.invoke(`/v1/workitems${qs}`); // 可注入额外参数：`&is_deleted=false`
+
+// 脆弱 - NOS key 未做前缀校验
+const url = await nos.createDownloadUrl(payload.key);
+
+// 脆弱 - KVS key 直接拼接用户输入
+const data = await kvs.get(`report-${payload.reportId}`);
+```
+
+安全模式
+
+```typescript
+// 安全 - 使用参数化的 GraphQL 变量
+await fetch.request('https://partner.example.com/graphql', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    query: `query GetUser($id: ID!) { user(id: $id) { email } }`,
+    variables: { id: payload.userId },
+  }),
+});
+
+// 安全 - CES 字段/排序使用白名单
+const ALLOWED_SORT_FIELDS = ['created_at', 'updated_at', 'title'] as const;
+const sortField = (ALLOWED_SORT_FIELDS as readonly string[]).includes(payload.sortBy)
+  ? payload.sortBy
+  : 'created_at';
+
+await ces.entity<WorkitemEntity>('workitems').find(cb => {
+  // 仅允许白名单字段进入条件
+  if (payload.filterField === 'status') cb.field('status').eq(payload.filterValue);
+  else if (payload.filterField === 'priority') cb.field('priority').eq(payload.filterValue);
+}, {
+  sort: [{ propertyKey: sortField, order: Direction.ascending }],
+});
+
+// 安全 - URLSearchParams 构造查询字符串
+const params = new URLSearchParams({
+  assignee: payload.assignee,
+  status: payload.status,
+});
+await api.invoke(`/v1/workitems?${params.toString()}`);
+
+// 安全 - NOS key 强制命名空间与授权
+const userPrefix = `user-${context.user!.id}/`;
+if (!payload.key.startsWith(userPrefix)) throw new Error('Forbidden');
+if (payload.key.includes('..')) throw new Error('Invalid key');
+const url = await nos.createDownloadUrl(payload.key);
+
+// 安全 - KVS key 通过 context 派生，而非 payload
+const data = await kvs.get(`user-${context.user!.id}/report/${reportId}`);
+```
+
+检测清单
+
+- [ ] 搜索 `fetch.request` / `remote.invoke` 中是否有 SQL/GraphQL/查询语言字符串拼接。
+- [ ] 检查 CES `field(...)`、`sort.propertyKey`、`projection`、`hint` 是否使用静态白名单。
+- [ ] 检查 `api.invoke` 路径与查询字符串是否使用 `encodeURIComponent`、`URLSearchParams` 或静态模板。
+- [ ] 检查 NOS key 是否有用户/项目/租户前缀校验，是否包含 `..`、绝对路径、空字节。
+- [ ] 检查 KVS key 是否由不可信输入直接拼接。
+- [ ] 对所有 ID 类输入使用严格格式校验（正则、枚举）。
+
+严重性分类
+
+| 严重性 | 模式 |
+|--------|------|
+| 严重 | 直接将用户输入拼接进远端 SQL/NoSQL 查询 |
+| 高 | CES 条件/排序字段来自输入并可访问元数据或绕过过滤 |
+| 高 | NOS key 未做前缀校验导致越权下载/删除 |
+| 中 | 查询字符串参数注入可修改 API 行为 |
+| 低 | 仅经过严格白名单校验的动态字段 |
+
+常见误区
+
+```typescript
+// 错误 - 数值仍需校验/绑定
+api.invoke(`/v1/workitems?id=${payload.id}`); // 应使用 URLSearchParams 或类型校验
+
+// 错误 - 自实现转义不充分
+const safe = input.replace(/'/g, "''");
+body = JSON.stringify({ query: `... name='${safe}'` });
+
+// 错误 - toString() 不构成净化
+fetch.request(`https://api.example.com/logs?date=${payload.date.toString()}`);
+```
+
+PoC / 测试线索
+
+- SQL/GraphQL 注入元字符：`' OR '1'='1`、`{user(id:"*"){email}}`、`" __typename }`。
+- 路径遍历：`../`、`..%2f`、`..%252f`、`%2e%2e/`。
+- 查询参数注入：`&is_deleted=false`、`#frag`、`?extra=1`。
+- CES 字段：将 `sortField` 改为 `_created_by`、`_is_deleted`、`_deleted_by`。
+- NOS key：`../other-user/secret.pdf`、`/admin/config.json`、`%2e%2e%2fadmin%2ffile`。
+- KVS key：尝试 `admin-config`、`user-other-id/data` 等。
+
+修复建议（咨询）
+
+- 对所有外部 SQL/NoSQL/GraphQL 使用参数化查询/变量，不要拼接字符串。
+- CES 字段名、排序、投影、索引提示使用严格白名单；禁止用户传入 `_*` 元数据字段。
+- 使用 `URLSearchParams` 或等价 API 构造查询字符串；路径段使用 `encodeURIComponent`。
+- 对 NOS key 强制用户/项目命名空间，检测 `..`、绝对路径、空字节，并在生成预签名 URL 前做对象级授权。
+- KVS key 由 `context.user.id`、`context.team.id` 等可信字段派生；不要直接使用 payload 作为 key 拼接源。
+- 对 ID 使用严格正则/类型校验；数值输入做类型转换与范围检查。
+
+报告指南
+
+- 引用文件、函数与行号，指出脆弱的查询/路径/键构造。
+- 展示从来源（payload/输入）到汇聚点（SQL/CES/api.invoke/NOS/KVS）的数据流。
+- 提供注入 PoC 载荷。
+- 映射到 CWE-89、CWE-943、CWE-22、CWE-639，并按严重性表分类。

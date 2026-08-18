@@ -1,0 +1,145 @@
+---
+description: 应优先使用平台提供的 context 对象，而不是在 payload 中显式传递用户/租户标识
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 函数可通过以下方式识别：
+  - 被导出，并在 manifest 中通过 `functions[].handler` 引用（handler 为以 `.` 分隔的链的最后一段）；
+  - 或作为 `resolver.define(key, handler)` 的第二个参数出现（其中 `resolver` 为 `@pc-nexus/core` 的 `Resolver` 实例）。
+- Nexus 函数接收两个参数（注意 context 在前，payload 在后）：
+  - `context: NexusAppContext` —— 由平台填充并校验，包含 `app`、`environment`、`team`、`installation`、`invocation`、`user?`、`extension?`、`event?` 等字段。
+  - `payload` —— 由调用方（Custom UI / 事件 / Webhook / exposer 客户端）提供，**不被平台校验**。
+- `context.user?.id` 是经过认证的用户标识。部分应用将本可从 context 获取的信息（常见为 `userId`、`teamId`、`installationId`、`locale`、`timezone`）通过 payload 显式传入。由于 payload 不受平台校验，应用必须自行校验，容易出现校验不严甚至完全缺失的情况，应避免。
+
+Nexus 函数签名
+
+```typescript
+// Resolver 处理器签名（注意 context 在 payload 之前）
+resolver.define<TPayload, TResult>(
+  key: string,
+  handler: (context: NexusAppContext, payload: TPayload) =>
+    Promise<TResult> | TResult,
+): Resolver;
+
+// 事件处理器签名（SystemEventHandler / LifecycleEventHandler / WebhookEventHandler / ScheduledEventHandler）
+type SystemEventHandler = (
+  context: NexusAppContext,
+  event: SystemEvent,
+) => Promise<void> | void;
+
+// 异步队列消费者
+type ConsumerHandler<T> = (
+  context: NexusAppContext,
+  task: { payload: T; task_id: string; job_id: string; consumer: { key: string } },
+) => Promise<void> | void;
+```
+
+NexusAppContext 关键字段
+
+```typescript
+interface NexusAppContext {
+  app: { id: string; version: string };
+  environment: { id: string; type: 'development' | 'staging' | 'production' };
+  team: { id: string; url: string; locale: string; timezone: string };
+  installation: { id: string };
+  invocation: { id: string };
+  user?: { id: string; locale: string; timezone: string };
+  extension?: {
+    key: string;
+    local_id: string;
+    target: string;
+    location?: unknown;
+    data?: Record<string, unknown>; // 扩展点上下文（project/workitem/page/...）
+  };
+  event?: { trigger: { key: string; type: string } };
+}
+```
+
+范围与信号
+
+- Manifest 关注点：`functions[].handler`、`extensions[].resolver.function`、`event.triggers[].handler.function`、`endpoints[].key`、`exposer.routes[].handler.function`、`async.consumers[].handler.function`。
+- 风险指标：
+  - payload 中存在与 context 字段同名或语义相同的字段（如 `userId`、`accountId`、`teamId`、`installationId`、`appId`、`locale`、`timezone`）。
+  - payload 字段随后被用于授权、数据键构造、`api.invoke(..., { as: "user", userId })`、CES 查询条件、NOS key 前缀、remote 调用。
+
+检测流程
+
+```md
+1. 从 manifest 中提取所有 function handler（functions、resolver.function、event.handler.function、
+   exposer.routes.handler.function、async.consumers.handler.function）。
+2. 在源码中找到每个函数定义。
+3. 检查每个函数如何使用其 payload/payload 形参，查找与上下文字段同名或同义的访问：
+   - 重点关注最终被传入 `api.invoke(..., { as: "user", userId: payload.xxx })` 的字段
+   - 被用于 KVS key / CES 条件 / NOS key 的用户或租户标识
+   - 被用于授权判断的字段
+4. 若发现可疑使用，标记该函数供审查。
+```
+
+脆弱与安全对照
+
+```typescript
+// 脆弱 - userId 来自 payload，可被伪造
+resolver.define<{ userId: string; settings: unknown }, void>(
+  'savePreferences',
+  async (context, payload) => {
+    // 攻击者可传入他人 userId 篡改其偏好
+    await kvs.set(`user-prefs-${payload.userId}`, payload.settings);
+  },
+);
+
+// 安全 - 使用 context.user.id
+resolver.define<{ settings: unknown }, void>(
+  'savePreferences',
+  async (context, payload) => {
+    await kvs.set(`user-prefs-${context.user!.id}`, payload.settings);
+  },
+);
+
+// 脆弱 - api.invoke 的 userId 来源于 payload
+resolver.define<{ targetUserId: string; issueId: string }, void>(
+  'assignIssue',
+  async (context, payload) => {
+    await api.invoke(`/v1/workitems/${payload.issueId}/assignee`, {
+      method: 'PUT',
+      as: 'user',
+      userId: payload.targetUserId, // 以任意用户身份调用！
+      body: JSON.stringify({ assignee_id: payload.targetUserId }),
+    });
+  },
+);
+
+// 安全 - userId 来自 context
+resolver.define<{ issueId: string; assigneeId: string }, void>(
+  'assignIssue',
+  async (context, payload) => {
+    // 先校验当前用户有权分配
+    const perms = await authorize.getUserPermissions(
+      'workitem', payload.issueId, context.user!.id,
+    );
+    if (!perms.some(p => p.key === 'pca:pjm:requirement:edit')) {
+      throw new Error('Forbidden');
+    }
+    // 若需以当前用户身份写 PingCode，使用 context.user.id
+    await api.invoke(`/v1/workitems/${payload.issueId}/assignee`, {
+      method: 'PUT',
+      as: 'user',
+      userId: context.user!.id,
+      body: JSON.stringify({ assignee_id: payload.assigneeId }),
+    });
+  },
+);
+```
+
+报告指南
+
+- 指出哪些函数在 payload 中传递了本应来自 context 的信息。按以下顺序排序：
+  1. 可确定性最高；
+  2. 这些字段最可能未被校验。
+  - 尤其优先标记将这些值传入 `api.invoke(..., { as: "user", userId })`、CES 条件、NOS key 前缀、远程调用的情况。
+- 若使用方式不太确定但仍被标记，仅指出位置供进一步调查。
+- 除非能验证 payload 字段未做校验即被使用，否则这通常不是漏洞而是显著弱点。
+- 当这些信息被发往 PingCode 之外的外部 API/remote 时，弱点更可能被利用。
+- 始终推荐使用对应的具体 context 字段作为替代（例如 `context.user.id`、`context.team.id`、`context.installation.id`、`context.app.version`、`context.user.locale`）。

@@ -1,0 +1,236 @@
+---
+description: Nexus 应用安全审查所用的静态分析工具与模式
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 应用使用 TypeScript/JavaScript 编写（后端运行于 serverless FaaS，前端为 sandboxed iframe Custom UI），除标准 JS/TS 扫描外，还需要 Nexus 专项规则。
+- 关键工具：Semgrep（社区 ruleset）、Snyk / npm audit（SCA）、gitleaks（密钥扫描）、ESLint 安全插件。本 skill 暂未分发自定义 Nexus Semgrep 规则，Nexus 专项检查通过代码阅读 + MDC 规则完成。
+- Nexus 平台不提供官方静态审查工具（如 Forge 的 FSRT），因此安全审查需依赖上述第三方社区工具与人工代码追踪。
+
+Nexus 专项 SAST 工具
+
+Semgrep for Nexus
+
+所有命令的 JSON 输出 MUST 写入 `$ARTIFACT_DIR`（由 SKILL.md 执行流程在被审查项目目录之外通过 `mktemp -d` 创建），NEVER 写入项目源码树。下面的 `$ARTIFACT_DIR` 即指该目录。
+
+```bash
+# 安装 semgrep
+brew install semgrep  # macOS
+# 或
+pip install semgrep
+
+# 使用 JavaScript 安全规则（社区 ruleset）
+semgrep --config p/javascript --json > "$ARTIFACT_DIR/semgrep-js.json"
+semgrep --config p/typescript --json > "$ARTIFACT_DIR/semgrep-ts.json"
+semgrep --config p/nodejsscan --json > "$ARTIFACT_DIR/semgrep-node.json"
+
+# 注意：本 skill 当前不分发 ./nexus-rules/ 自定义规则目录。
+# 下方“Nexus 自定义 Semgrep 规则示例”仅作为规则编写参考；
+# 在该规则集随 skill 分发前，NEVER 执行 `semgrep --config ./nexus-rules/`，
+# 也不要在报告中声称已运行 Nexus 自定义 Semgrep 规则。
+```
+
+Nexus 自定义 Semgrep 规则示例
+
+```yaml
+# nexus-asapp-no-authz.yaml
+rules:
+  - id: nexus-api-invoke-asapp-no-authz
+    patterns:
+      - pattern: |
+          api.invoke($PATH, { as: "app", ... })
+      - pattern-not-inside: |
+          if (...) { ... throw ... }
+          ...
+    message: "api.invoke 使用 as:app 但缺少显式授权校验"
+    severity: WARNING
+    languages: [javascript, typescript]
+
+  - id: nexus-fetch-user-url
+    patterns:
+      - pattern-either:
+          - pattern: fetch.request(`${...}${$VAR}${...}`)
+          - pattern: fetch.request($VAR)
+    message: "fetch.request 使用动态 URL，存在 SSRF 风险；需校验目标域名在 manifest allowlist 中"
+    severity: WARNING
+    languages: [javascript, typescript]
+
+  - id: nexus-dangerouslysetinnerhtml
+    pattern: dangerouslySetInnerHTML={{ __html: $VAR }}
+    message: "dangerouslySetInnerHTML —— 必须验证 XSS 净化与 CSP 配置"
+    severity: WARNING
+    languages: [javascript, typescript]
+
+  - id: nexus-dynamic-code-execution
+    patterns:
+      - pattern-either:
+          - pattern: new Function(...)
+          - pattern: new AsyncFunction(...)
+          - pattern: eval(...)
+    message: "动态代码执行 —— RCE 高风险"
+    severity: ERROR
+    languages: [javascript, typescript]
+
+  - id: nexus-webhook-no-auth
+    patterns:
+      - pattern: |
+          export default async function $HANDLER(context, event) { ... }
+      - pattern-not: |
+          export default async function $HANDLER(context, event) {
+            ...
+            const $SIG = event.headers[...];
+            ...
+          }
+    message: "Webhook 处理器缺少签名校验（Nexus 不提供内置认证）"
+    severity: WARNING
+    languages: [javascript, typescript]
+
+  - id: nexus-kvs-hardcoded-secret
+    patterns:
+      - pattern: kvs.set($KEY, $SECRET, { secret: true, ... })
+      - metavariable-pattern:
+          metavariable: $SECRET
+          patterns:
+            - pattern: |
+                "..."
+    message: "kvs.set 使用 secret:true 但写入硬编码值，请确认非真实凭据"
+    severity: WARNING
+```
+
+SCA：Snyk / npm audit
+
+```bash
+# 扫描依赖漏洞（输出写入项目外的 $ARTIFACT_DIR）
+npm audit --json > "$ARTIFACT_DIR/npm-audit.json"
+snyk test --severity-threshold=low --json > "$ARTIFACT_DIR/snyk-results.json"
+
+# 关键检查：
+# - 依赖中已知 CVE
+# - 过期包
+# - 许可证合规
+```
+
+分析工作流
+
+```bash
+# 1. Manifest 分析（优先使用 SKILL 提供的 scripts/summarize_manifest.py，在 skill 目录下执行，勿用 yq 手动解析）
+# 先生成 Markdown 摘要到 stdout 供阅读：
+python3 scripts/summarize_manifest.py <nexus-project-root> --format markdown
+# 同时写入 JSON 证据到 $ARTIFACT_DIR：
+python3 scripts/summarize_manifest.py <nexus-project-root> --format json \
+  -o "$ARTIFACT_DIR/manifest-summary.json"
+# 检查 scopes、external.fetch.backend/client、content.scripts/styles、remotes、endpoints、exposer
+
+# 2. Semgrep 扫描（三个社区 ruleset；本 skill 暂未分发 ./nexus-rules/，不要运行自定义规则）
+semgrep --config p/javascript --config p/typescript --config p/nodejsscan \
+  --json > "$ARTIFACT_DIR/semgrep-results.json"
+
+# 3. 依赖扫描
+snyk test --json > "$ARTIFACT_DIR/snyk-results.json"
+npm audit --json > "$ARTIFACT_DIR/npm-audit.json"
+
+# 4. 密钥扫描
+gitleaks detect --source . --report-format json --report-path "$ARTIFACT_DIR/secrets.json"
+
+# 5. （可选）ESLint 安全插件，若项目已配置 eslint：
+#    eslint-plugin-security、eslint-plugin-no-secrets、@microsoft/eslint-plugin-sdl
+npx eslint --no-eslintrc --plugin security --rule 'security/detect-*: warn' \
+  -f json -o "$ARTIFACT_DIR/eslint-security.json" 'src/**/*.{js,ts}' 'web/**/*.{js,ts,tsx}' || true
+
+# 6. 分类与关联
+# 合并结果、去重、按优先级排序
+```
+
+检测模式汇总
+
+| 类别 | 模式 | 工具 |
+|------|------|------|
+| 授权缺失 | `api.invoke(..., { as: "app" })` 前无权限检查 | Semgrep |
+| SSRF | `fetch.request($USER_CONTROLLED_URL)` | Semgrep |
+| XSS | `dangerouslySetInnerHTML` + `unsafe-inline` CSP | Semgrep + Manifest |
+| RCE | `new Function()`、`eval()` | Semgrep |
+| Webhook 无认证 | WebhookHandler 无签名/时间戳校验 | Semgrep |
+| 硬编码密钥 | API Key、Bearer Token、Basic Auth | gitleaks |
+| 依赖漏洞 | node_modules 中的 CVE | Snyk、npm audit |
+| NOS 越权 | NOS key 来自 payload 但未做前缀/授权校验 | 代码阅读（自定义规则未分发） |
+| CES 条件注入 | CES 字段名/操作符来自用户输入 | 代码阅读（自定义规则未分发） |
+
+误报抑制
+
+```yaml
+# 排除测试文件
+semgrep --exclude='**/test/**' --exclude='**/*.test.*' --exclude='**/*.spec.*'
+
+# 排除 node_modules
+semgrep --exclude='**/node_modules/**'
+
+# 排除打包输出
+semgrep --exclude='**/dist/**' --exclude='**/build/**' --exclude='**/web/main/dist/**'
+
+# 排除压缩/打包文件
+semgrep --exclude='**/*.min.js' --exclude='**/*.bundle.js'
+```
+
+分类指南
+
+```
+1. 严重（Critical）：
+   - 用户输入控制的 RCE（eval/new Function）
+   - 硬编码生产密钥
+   - as:"app" 无授权导致越权写/删
+   - Webhook 无签名即可执行敏感操作
+
+2. 高危（High）：
+   - unsafe-inline CSP + dangerouslySetInnerHTML
+   - 原型污染
+   - NOS/CES 跨租户越权
+   - FaaS warm start 全局状态泄漏租户数据
+   - 远端未验证 NIT JWT
+
+3. 中危（Medium）：
+   - 过宽 scopes
+   - 通配符 external.fetch.backend
+   - 缺失输入校验
+   - 日志中包含令牌/敏感字段
+   - remote 同时开启 userToken+appToken 但无强授权
+
+4. 低危（Low）：
+   - 信息性发现
+   - 最佳实践偏差
+   - 未使用代码模式
+```
+
+报告模板
+
+```markdown
+## 发现：[标题]
+- **严重性**：Critical/High/Medium/Low
+- **类别**：SQLi/XSS/AuthZ/SSRF/...
+- **工具**：Semgrep/Snyk/gitleaks/...
+- **文件**：path/to/file.ts
+- **行号**：42
+- **模式**：`api.invoke("/v1/workitems/" + payload.id, { as: "app" })`
+- **数据流**：payload.id → resolver → api.invoke(as:"app")
+- **CWE**：CWE-862
+- **修复建议**：先调用 authorize.getUserPermissions("workitem", id, context.user.id) 或改用 as:"user"
+```
+
+报告要求
+
+```text
+对 npm audit 与 snyk 的结果，按每个唯一漏洞输出去重后的分析报告，必须包含：
+- 包名
+- 已安装/解析的存在漏洞版本
+- 存在漏洞的 semver 范围
+- 已修复版本或明确标注 "no fix available"
+- 升级路径（直接依赖/间接依赖）
+- 严重性、CVE/GHSA/CWE
+- 来自 lockfile 与扫描器 JSON 的证据路径
+存在漏洞时不得只返回数量。
+
+所有生成的扫描输出必须写入由 SKILL.md 执行流程通过 `mktemp -d` 创建的单一专用临时目录（位于被审查项目目录之外，例如 `$ARTIFACT_DIR`）。
+- 严禁将输出或扫描器产物写入被审查项目的源码树（包括其根目录、项目内的 security-audit-artifacts/ 或任何子目录），即使用户的 .gitignore 已忽略对应路径也不例外。
+```

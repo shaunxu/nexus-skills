@@ -1,0 +1,42 @@
+---
+description: Nexus 审计规则索引（日志、错误处理、静态分析）。对 nexus-auditing/** 自动挂载
+globs:
+  - nexus-auditing/**
+alwaysApply: false
+---
+
+- 范围：Nexus 应用的日志实践、错误处理、静态分析工具与可观测性。
+
+Nexus 审计关键关注点
+
+- 日志中的敏感数据：写入 console 或日志输出的令牌、凭据、PII（特别是 `x-nexus-app-token`、`x-nexus-user-token`、NIT、PingCode access token）。
+- 冗余错误消息：将堆栈跟踪或内部细节暴露给前端或 Webhook 调用方。
+- 缺少安全日志：敏感操作（删除、导出、权限变更、Webhook 处理失败、NIT 校验失败）缺少审计轨迹。
+- SAST 工具配置：确保扫描器覆盖 Nexus 专项模式（Resolver、CES 条件、NOS key、`api.invoke`、`fetch.request`、`as: "app"` 等）。
+
+子规则
+
+- Nexus 静态分析 → `@nexus-auditing/static-analysis-nexus.mdc`
+<!-- - 日志安全 → `@nexus-auditing/logging-security.mdc`
+- 错误处理 → `@nexus-auditing/error-handling.mdc` -->
+
+检测启发式
+
+- 搜索 `console.log`、`console.error`、`logger.*` 等调用中是否包含敏感变量名（token、secret、password、authorization、cookie、x-nexus-*）。
+- 检查错误处理器是否存在信息泄漏（堆栈跟踪、内部路径、SQL/CES 查询细节、远端 baseUrl）。
+- 验证 SAST 配置包含 Nexus 专项规则（Resolver 授权、`as: "app"`、CES 查询、NOS key、`fetch.request` URL 构造、`dangerouslySetInnerHTML`、`eval`/`new Function`）。
+
+Nexus 日志事实
+
+- Nexus 后端通过 `console.log/info/debug/warn/error` 输出日志，自动附加字段：Level、Time、Environment、Invocation ID、Trace ID、Extension、Event Trigger、Function、Version、Site。
+- 日志通过 `nexus logs [-g/--grouped] [-v/--verbose] [-i <invocation-id>] [-e <env>] [--since]` 查看；开发环境日志始终开启；生产环境由企业管理员在安装时通过「是否允许记录日志」开关控制；默认保留 30 天。
+- 日志限流：每次调用最多 128 行 / 256KB；下载上限 96000 行 / 128MB。
+- 前端 Custom UI 的 `console.*` 仅在用户浏览器 DevTools 中可见，不会回传 Nexus。
+- Lambda/FaaS 运行时聚合日志；必须确保租户上下文（team/installation/invocation）不会跨日志条目泄漏，且不要在模块级缓存中留存前一次请求的数据。
+
+CWE 参考
+
+- CWE-778：日志记录不足
+- CWE-209：通过错误消息暴露信息
+- CWE-117：日志输出中性化不当
+- CWE-532：将敏感信息写入日志文件

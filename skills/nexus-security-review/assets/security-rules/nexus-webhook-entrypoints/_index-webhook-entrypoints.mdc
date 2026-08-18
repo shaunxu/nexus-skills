@@ -1,0 +1,50 @@
+---
+description: Nexus Webhook 与外部入口规则索引。对 nexus-webhook-entrypoints/** 自动挂载
+globs:
+  - nexus-webhook-entrypoints/**
+alwaysApply: false
+---
+
+- 范围：Webhook 触发器、定时触发器、系统/生命周期事件处理器、exposer 自定义 REST API 等可从外部触达的入口。
+- 优先级：Webhook 是公开 URL，且 Nexus 平台**不提供任何内置认证**，是主要攻击面。
+
+Nexus 入口关键风险
+
+- Webhook 无平台内置认证：Nexus 不校验签名、不鉴权，应用必须自行实现。
+- 缺失请求校验：无签名验证、无防重放、无完整性校验。
+- 滥用防护缺失：Webhook 与自定义 API 没有平台级限流/节流（应用可自行实现，但需要在无状态函数中借助 KVS/CES）。
+- 事件处理器信任：盲目信任事件 payload 来源；系统事件虽由平台触发，但用户行为可诱导产生事件；定时事件无用户上下文。
+- exposer 自定义 API：通过 `ncp:` scope 控制访问，但处理函数仍需对象级授权，并验证输入。
+- Endpoints（remotes 桥接）：扩展/事件通过 endpoint 调用 remote；remote 必须验证 NIT JWT。
+
+子规则
+
+- Webhook 安全 → `@nexus-webhook-entrypoints/webhook-security.mdc`
+<!-- - 请求认证 → `@nexus-webhook-entrypoints/request-authentication.mdc`
+- 重放与滥用防护 → `@nexus-webhook-entrypoints/replay-abuse-protection.mdc`
+- 事件处理器校验 → `@nexus-webhook-entrypoints/event-handler-validation.mdc` -->
+
+检测启发式
+
+- 在 `manifest.yaml` 中识别所有 `event.triggers`（`type: webhook`）与 `exposer.routes`。
+- 检查 Webhook handler 是否处理认证头（如 `x-signature`、`x-webhook-signature`、HMAC）。
+- 查找时间戳/nonce 校验以防止重放。
+- 审查事件处理器在处理前是否做输入校验。
+- 检查 `WebhookEventHandler` 是否使用 `crypto.timingSafeEqual` 进行签名比较。
+
+Webhook 平台事实
+
+- Webhook URL 形如：`https://{appId}.webhook.pingcodex.com/x1/{webhookId}`。
+- 每个 trigger key 最多 32 个 URL，每个应用最多 8 个 webhook trigger。
+- 处理器接收 `{method, path, headers, body, queryParameters}`，返回 `{statusCode, headers?, body?}`。
+- `body` 可能是 string、JSON、XML 或 form 编码；不要假设格式。
+- 处理器超时 60 秒；平台不提供重试机制，超时或处理失败直接报错返回，因此 handler 必须自行保证幂等与错误处理。
+- `webhook.getUrl(key, {forceCreate?})`、`queryUrls(key?)`、`deleteUrl(url)` 管理 URL。
+- 系统/生命周期事件以 SYSTEM 身份触发，`context.user` 通常为 undefined；`filter.ignoreSelf: true` 可过滤应用自身引发的事件。
+
+CWE 参考
+
+- CWE-306：关键功能缺失认证
+- CWE-352：跨站请求伪造
+- CWE-799：交互频率控制不当
+- CWE-294：通过捕获/重放绕过认证

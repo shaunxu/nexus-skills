@@ -1,0 +1,49 @@
+---
+description: Nexus 注入规则索引。对 nexus-injection/** 自动挂载
+globs:
+  - nexus-injection/**
+alwaysApply: false
+---
+
+- 范围：Nexus 应用中因输入校验不足导致的注入漏洞，包括命令/代码执行、XSS、原型污染、SSRF 以及查询/路径/键注入。
+- 优先级：注入漏洞是高严重性发现的主要类别之一。
+
+Nexus 注入关键风险
+
+- Nexus 平台**不提供** SQL API；应用通常通过 `api.invoke` 访问 PingCode REST API、通过 CES 访问结构化数据、通过 `fetch.request` 调用外部服务。因此传统 SQL 注入主要出现在：
+  - 应用自建/接入的外部数据库（远端服务）；
+  - 将用户输入拼接到 `api.invoke` 路径或查询字符串（路径/参数注入）；
+  - CES 条件构造器中字段名、操作符、排序键来自用户输入；
+  - NOS 对象 key 来自用户输入（路径遍历/越权）。
+- 通过 `AsyncFunction`、`new Function()`、`eval()` 执行用户可控代码。
+- Custom UI 在 manifest 启用 `unsafe-inline` 时使用 `dangerouslySetInnerHTML` 或 `innerHTML` 渲染用户内容导致 XSS。
+- 原型污染可能导致跨调用数据泄漏、权限提升（影响 `api.invoke` 选项或 fetch headers）。
+- 用用户可控输入构造 `fetch.request` URL 导致 SSRF。
+
+子规则
+
+- 远程代码执行 → `@nexus-injection/rce-code-execution.mdc`
+- 跨站脚本 → `@nexus-injection/xss.mdc`
+- 原型污染 → `@nexus-injection/prototype-pollution.mdc`
+- SSRF 与请求伪造 → `@nexus-injection/ssrf.mdc`
+- 查询/路径/键注入（含类 SQL 与 CES/NOS/API 路径注入）→ `@nexus-injection/sql-injection.mdc`
+
+检测启发式
+
+- 追踪来自 Resolver、Webhook、事件的不可信输入到查询/路径/命令/出站请求汇聚点。
+- 搜索 `api.invoke` 路径中的字符串插值/拼接。
+- 识别 `AsyncFunction`、`new Function()`、`eval()`、`setTimeout(string)`、`setInterval(string)` 是否使用动态输入。
+- 当 manifest 启用 `unsafe-inline` 时检查 `dangerouslySetInnerHTML`、`innerHTML`、`outerHTML`、`insertAdjacentHTML`。
+- 查找 `fetch.request` 使用动态 URL；检查 CES 字段名/排序键、NOS key 是否来自输入。
+- 检查 `JSON.parse`、递归 merge、`Object.assign` 与不可信对象的组合。
+
+CWE 参考
+
+- CWE-89：SQL 注入
+- CWE-78：OS 命令注入
+- CWE-79：跨站脚本
+- CWE-94：代码注入
+- CWE-95：Eval 注入
+- CWE-1321：原型污染
+- CWE-918：服务端请求伪造（SSRF）
+- CWE-22：路径遍历

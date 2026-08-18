@@ -1,0 +1,175 @@
+---
+description: Nexus 应用依赖的软件成分分析（SCA）
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 应用依赖 npm 包（前端 `web/`、后端 `src/`），其中可能存在已知漏洞。SCA 用于识别依赖中的 CVE 与许可证风险。
+- 相关 CWE：CWE-1104（使用未维护的第三方组件）、CWE-1395（依赖存在漏洞的第三方组件）。
+- 应用审核要求在发布前完成依赖扫描。
+
+SCA 工具与命令
+
+所有扫描输出 MUST 写入 `$ARTIFACT_DIR`（由 SKILL.md 执行流程在被审查项目目录之外通过 `mktemp -d` 创建），NEVER 写入项目源码树。Nexus 应用可能是 monorepo，前端 `web/` 与后端 `src/` 各自拥有 `package.json`/lockfile，必须在每个 lockfile 所在目录分别运行扫描。
+
+```bash
+# 在每个包含 package-lock.json 的目录（项目根、web/、src/ 等）分别执行：
+npm audit --json > "$ARTIFACT_DIR/npm-audit-<subdir>.json"
+# 例：
+( cd web && npm audit --json > "$ARTIFACT_DIR/npm-audit-web.json" )
+( cd src && npm audit --json > "$ARTIFACT_DIR/npm-audit-src.json" )
+
+# 注意：npm audit fix / npm update / npm install 会修改依赖与 lockfile，
+# 属于修复操作。除非用户明确要求修复，否则只能运行只读扫描命令，
+# 不得自动执行任何会改写 package.json 或 lockfile 的命令。
+
+# Snyk（推荐；--all-projects 可递归发现 monorepo 中的多个 lockfile）
+snyk test --all-projects --severity-threshold=low --json > "$ARTIFACT_DIR/snyk-results.json"
+snyk monitor  # 持续监控（需用户同意，会上传依赖快照）
+
+# OSV-Scanner（Google），递归扫描目录下所有 lockfile
+osv-scanner -r . > "$ARTIFACT_DIR/osv-results.txt"
+
+# Trivy
+trivy fs --scanners vuln . > "$ARTIFACT_DIR/trivy-results.txt"
+```
+
+Nexus 场景下的关键漏洞模式
+
+| 包 | 漏洞类型 | Nexus 影响 |
+|----|----------|-----------|
+| lodash < 4.17.21 | 原型污染 | 污染运行时对象，影响 api.invoke 选项 / warm start 缓存 |
+| axios < 0.21.1 / < 1.6.0 | SSRF / CSRF / header 注入 | 在 `fetch.request` 之外若使用 axios，可能绕过域名 allowlist 或被注入 header |
+| minimist < 1.2.6 | 原型污染 | 解析 CLI/配置参数时污染 Object.prototype |
+| node-fetch < 2.6.7 | header 注入/信息泄漏 | 请求伪造 |
+| jsonwebtoken < 9.0.0 | JWT 校验绕过 | 若在应用或 remote 端校验 NIT/其他 JWT 时受影响 |
+| ws < 8.0.0 | DoS / 协议问题 | 若使用 WebSocket |
+| 任意使用 `eval`/`new Function` 的包 | RCE | FaaS warm start 跨调用风险 |
+
+注意：Nexus 后端出站使用平台提供的 `fetch.request`（基于 undici），不受 `node-fetch`/`axios` 漏洞直接影响，但前端 bundle 中仍可能受影响。
+
+检测流程
+
+```bash
+# 1. 检查存在漏洞的包
+npm audit
+
+# 2. 详细分析
+npm ls lodash  # 检查特定包版本
+
+# 3. 结合 Nexus 场景判断风险
+# - 漏洞代码是否在后端 Resolver/事件处理器中可达？
+# - 是否在 Custom UI bundle 中可达？
+# - 是否仅在构建期（webpack/vite 插件）使用？风险较低但仍建议升级
+```
+
+结果解释
+
+```
+┌───────────────┬──────────────────────────────────────┐
+│ 严重性        │ 处置建议                             │
+├───────────────┼──────────────────────────────────────┤
+│ Critical      │ 立即升级或移除                       │
+│ High          │ 下次发布前升级                       │
+│ Medium        │ 计划升级；评估可利用性               │
+│ Low           │ 跟踪；维护期升级                     │
+└───────────────┴──────────────────────────────────────┘
+```
+
+示例分析
+
+```bash
+# npm audit 输出示例
+┌───────────────┬──────────────────────────────────────┐
+│ High          │ Prototype Pollution in lodash        │
+├───────────────┼──────────────────────────────────────┤
+│ Package       │ lodash                               │
+│ Dependency of │ some-package                         │
+│ Path          │ some-package > lodash                │
+│ More info     │ https://nvd.nist.gov/vuln/detail/...│
+└───────────────┴──────────────────────────────────────┘
+
+# 解决方案（仅在用户明确要求修复时执行）
+npm update lodash
+# 若是间接依赖：
+npm update some-package
+# 或在 package.json 中使用 overrides 强制版本：
+{
+  "overrides": {
+    "lodash": "^4.17.21"
+  }
+}
+```
+
+检测清单
+
+- [ ] 运行 `npm audit` 并记录结果。
+- [ ] 运行 Snyk 或其他 SCA 工具。
+- [ ] 重点检查 Nexus 高风险包（lodash、axios、jsonwebtoken、node-fetch、minimist 等）。
+- [ ] 评估漏洞代码路径是否可达（特别是 Resolver、事件处理器、Webhook、Custom UI）。
+- [ ] 区分构建期依赖与运行时依赖。
+- [ ] 检查已过时但尚无已知 CVE 的包，评估维护状态。
+- [ ] 检查是否误用 `@forge/*` 或其他平台专属包。
+- [ ] 避免使用原生模块（`.node`）；Nexus FaaS 未对原生模块提供完整测试，可能导致部署或运行失败。
+
+误报处理
+
+```
+以下情况漏洞可能不适用：
+
+1. 仅构建期依赖
+   - webpack/vite 插件中的漏洞
+   - 不会进入运行时 bundle
+   - 风险较低但仍建议升级
+
+2. 未使用的代码路径
+   - 漏洞函数未被 import
+   - 评估实际使用情况
+
+3. 已被 Nexus 平台缓解
+   - 出站受 manifest allowlist 限制，部分 SSRF/网络类漏洞可被平台阻断
+   - 但不应仅依赖平台，纵深防御仍需升级
+
+4. 仅在开发环境依赖（devDependencies）
+   - 若 CI/发布流程不受影响，风险低于运行时依赖
+```
+
+修复方式（仅在用户明确要求修复依赖时执行；默认只报告，不修改 package.json/lockfile）
+
+```bash
+# 1. 直接升级（首选）
+npm update package-name
+
+# 2. 强制指定版本
+npm install package-name@fixed-version
+
+# 3. 通过 overrides 修复间接依赖
+# package.json:
+{
+  "overrides": {
+    "vulnerable-package": "^fixed.version"
+  }
+}
+
+# 4. 替换包
+npm uninstall old-package
+npm install alternative-package
+```
+
+报告指南
+
+- 列出所有漏洞，包含严重性、包名、CVE/GHSA。
+- 注明运行时/构建期、前端/后端。
+- 在 Nexus 上下文中评估可利用性。
+- 提供具体版本升级路径。
+- 映射到 CWE-1104、CWE-1395；附上 CVE 参考与 lockfile 证据路径。
+- 对 `npm audit` 与 `snyk` 结果按唯一漏洞输出去重后的报告，必须包含：
+  - 包名
+  - 已安装/解析的存在漏洞版本
+  - 漏洞 semver 范围
+  - 已修复版本或「no fix available」
+  - 升级路径（直接/间接）
+  - 严重性、CVE/GHSA/CWE
+  - 来自 lockfile 与扫描器 JSON 的证据路径

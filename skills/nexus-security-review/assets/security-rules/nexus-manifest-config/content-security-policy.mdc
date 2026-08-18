@@ -1,0 +1,157 @@
+---
+description: 检测 Nexus 应用 manifest 中不安全的内容安全策略（CSP）配置
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus Custom UI 的 CSP 通过 manifest 的 `permissions.content` 配置。不安全的指令（`unsafe-inline`、`unsafe-eval`）会使 XSS 更容易被利用；过宽的来源允许加载任意外部脚本/样式。
+- 相关 CWE：CWE-16（配置错误）、CWE-79（因 CSP 绕过导致的 XSS）。
+
+范围与信号
+
+- Manifest 位置：`permissions.content.scripts`、`permissions.content.styles`、以及 `permissions.external.fonts/styles/frames/images/media/scripts`。
+- 危险指令：
+  - `unsafe-inline` —— 允许内联 `<script>` 与事件处理器（XSS 主要向量）
+  - `unsafe-eval` —— 允许 `eval()`、`new Function()`、`setTimeout(string)`
+  - `unsafe-hashes` —— 允许特定内联事件处理器（仍可能被滥用）
+  - `blob:`、`data:` —— 允许从 blob/data URI 执行脚本
+  - `sha256-...` / `sha384-...` / `sha512-...` —— 具体哈希通常可接受，但应核对对应的脚本确实是预期的
+  - `*`、`https:` —— 允许任意来源
+- 注意：Nexus Custom UI 运行在固定 sandbox（`allow-scripts allow-same-origin allow-forms allow-modals allow-downloads allow-pointer-lock`），且不可配置，但 CSP 仍决定可加载哪些外部资源。
+
+脆弱模式
+
+```yaml
+# 高风险 - 同时启用 unsafe-inline 与 unsafe-eval
+permissions:
+  content:
+    scripts:
+      - 'unsafe-inline'
+      - 'unsafe-eval'
+
+# 高风险 - unsafe-inline 放大 XSS
+permissions:
+  content:
+    scripts:
+      - 'unsafe-inline'
+
+# 高风险 - unsafe-eval 允许代码注入
+permissions:
+  content:
+    scripts:
+      - 'unsafe-eval'
+
+# 高风险 - 通配符脚本来源
+permissions:
+  content:
+    scripts:
+      - '*'
+      - 'https:'
+
+# 中风险 - 过宽 CDN
+permissions:
+  content:
+    scripts:
+      - 'https://cdn.jsdelivr.net'   # 托管任意 npm 包内容
+      - 'https://unpkg.com'
+```
+
+安全模式
+
+```yaml
+# 安全 - 仅指定可信来源
+permissions:
+  content:
+    scripts:
+      - 'https://specific-cdn.example.com/lib.js'
+    styles:
+      - 'https://fonts.googleapis.com'
+
+# 安全 - 不使用不安全指令（默认）
+permissions:
+  content:
+    styles:
+      - 'https://fonts.googleapis.com'
+# scripts 缺省 = 无额外脚本来源
+
+# 最安全 - 不声明任何 content 权限
+# 全部依赖打包后的代码，不加载外部资源
+```
+
+检测清单
+
+- [ ] 解析 manifest 的 `permissions.content`。
+- [ ] 标记 `scripts` 中的 `unsafe-inline`（XSS 放大器）。
+- [ ] 标记 `scripts` 中的 `unsafe-eval`（代码注入放大器）。
+- [ ] 检查是否存在通配符或过宽来源（`*`、`https:`、`data:`、`blob:`）。
+- [ ] 验证外部脚本来源是否可信且必要（不要使用包含用户上传内容的 CDN）。
+- [ ] 与 XSS 发现交叉引用：`unsafe-inline` + `dangerouslySetInnerHTML`/`innerHTML` 组合尤其危险。
+- [ ] 核对哈希白名单是否对应已知、固定的脚本；不要对动态生成的内容使用宽松哈希。
+- [ ] 检查 `permissions.external.scripts` 是否被用于加载第三方脚本，并审查来源。
+
+风险评估矩阵
+
+| 指令 | 风险 | 可能导致 |
+|------|------|----------|
+| `unsafe-inline` | 高 | 内联脚本 XSS |
+| `unsafe-eval` | 高 | eval/Function 代码注入 |
+| `blob:` | 中 | 从 Blob URI 执行脚本 |
+| `data:` | 中 | data: URI 脚本 |
+| `*` | 严重 | 加载外部任意脚本 |
+| `https:` | 高 | 加载任意外部 HTTPS 脚本 |
+| 指定 CDN | 中 | 取决于 CDN 内容控制 |
+
+常见正当理由（评估有效性）
+
+```yaml
+# "我们需要 inline script 用于 React"
+# 不成立 —— 现代 React 打包后无需 unsafe-inline；使用打包产物避免内联处理器
+
+# "图表库需要 eval"
+# 存疑 —— 现代库通常不再需要 eval；应寻找替代或升级版本
+
+# "我们需要动态加载脚本"
+# 可能有效但需严格审查
+# 方案：使用具体 URL，不要使用通配符
+```
+
+CDN 风险评估
+
+```yaml
+# 高风险 CDN（托管用户上传内容）
+- 'https://cdn.jsdelivr.net'   # npm 包，第三方可控
+- 'https://unpkg.com'          # npm 包
+- 'https://cdnjs.cloudflare.com'  # 通常可信但范围宽
+
+# 推荐：若必须使用 CDN，指定具体版本/文件
+permissions:
+  content:
+    scripts:
+      - 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js'
+```
+
+PoC / 测试线索
+
+- 若存在 `unsafe-inline`，搜索 `dangerouslySetInnerHTML`/`v-html`/`innerHTML` 作为 XSS 组合。
+- 若存在 `unsafe-eval`，搜索代码注入汇聚点（eval、Function、setTimeout(string)）。
+- 对放宽 CSP 的应用测试 XSS 载荷。
+- 验证每个外部来源的必要性。
+
+修复建议（咨询）
+
+- 移除 `unsafe-inline`：打包所有 JavaScript，避免内联事件处理器；现代框架（React/Vue/Angular）均支持。
+- 移除 `unsafe-eval`：升级依赖，避免动态代码执行。
+- 用具体域名/路径替换通配符。
+- 审计每个外部来源的必要性；只在代码中确实加载该来源时才声明。
+- 对外部脚本尽可能使用子资源完整性（SRI）。
+- 若确实需要 `unsafe-inline`，必须在文档中说明理由，并确保应用中不存在 XSS 汇聚点（配合严格的输入净化）。
+
+报告指南
+
+- 记录 manifest 中确切的 CSP 配置。
+- 解释每个不安全指令所能启用的攻击。
+- 与其他发现（XSS 汇聚点、eval 使用）交叉引用。
+- 提供具体的移除/收敛建议。
+- 映射到 CWE-16；注明对 CWE-79（XSS）可利用性的影响。

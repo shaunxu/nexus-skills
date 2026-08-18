@@ -1,0 +1,251 @@
+---
+description: 检测 Nexus Resolver 中敏感操作缺失授权检查的问题
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus Resolver 通过 `resolver.define(key, handler)` 定义，由 Custom UI 经 Bridge `invoke(key, payload)` 调用，或由扩展的 `resolver.function` 绑定。浏览器上下文不可信，所有授权必须在服务端 Resolver 中完成。
+- 平台层并不区分「管理员 Resolver」与「普通用户 Resolver」。绑定到扩展的任何 Resolver 处理器，对所有能加载该扩展界面（项目页、工作项面板、Wiki 内容块等）的用户均可调用；display 条件仅隐藏 UI，不能阻断调用。
+- 相关 CWE：CWE-862（缺失授权）、CWE-863（授权不正确）、CWE-639（IDOR）。
+- 认证 ≠ 授权。用户已登录（认证）并不意味着其有权访问 payload 中的全部资源（授权）。
+- 常见问题：
+  - 依赖前端校验或 display 条件而非 Resolver 端授权。
+  - 仅供管理员使用的 Resolver（如 getAdminConfig、adminAction、exportAll）若未在服务端强制授权，可被普通用户直接 `invoke`。
+  - 同一处理函数代码路径不区分调用者身份。
+
+范围与信号
+
+- 来源：Resolver 定义中的 `payload` 参数、`context` 对象、自定义 API 请求。
+- 信任边界：客户端传入的一切（payload、UI 状态、扩展数据中被前端篡改的字段）均不可信。`context` 由 Nexus 平台填充，可信；`context.extension.data` 来自扩展上下文，但在前端场景下可被影响，不应单独用于授权决策。
+- 红旗：
+  - 变更数据但未检查用户角色/权限的 Resolver。
+  - 直接使用 payload 中的 ID 访问资源，未做所有权/成员校验。
+  - 假设 display 条件提供授权。
+  - 对执行管理员操作（`kvs.get(..., {secret:true})`、`as:"app"` 变更、配置写入、批量删除/导出）的 Resolver，必须在入口使用可信的服务端来源（`context.user.id`、`authorize.getUserPermissions()`、PingCode API、存储的所有权数据）强制授权；若仅依赖 display 或客户端传入的角色/字段，视为授权缺失。
+  - 假设「UI 显示在某个资源页面（如某项目/工作项/页面）就意味着用户对该资源及其关联数据有权限」。
+
+脆弱模式
+
+```typescript
+// 脆弱 - 无授权，直接使用 payload
+resolver.define<{ commentId: string }, void>(
+  'deleteComment',
+  async (context, payload) => {
+    // 攻击者可传入任意 commentId 删除他人评论
+    await ces.entity<CommentEntity>('comments').delete(cb => cb.field('id').eq(payload.commentId));
+  },
+);
+
+// 脆弱 - 以为 UI 可见就已授权
+resolver.define<Record<string, never>, unknown>(
+  'getSecretConfig',
+  async () => {
+    // display 条件隐藏 UI 但无法阻止直接 invoke()
+    return await kvs.get('admin-config', { secret: true });
+  },
+);
+
+// 脆弱 - 使用客户端提供的角色/权限做授权
+resolver.define<{ isAdmin: boolean }, void>(
+  'adminAction',
+  async (context, payload) => {
+    if (payload.isAdmin) { // 客户端可伪造！
+      await performAdminAction();
+    }
+  },
+);
+
+// 脆弱 - 假设 UI 上下文等于授权
+// 此 Resolver 绑定在项目设置页，开发者以为只有项目管理员可见
+resolver.define<{ projectId: string }, unknown>(
+  'getProjectSettings',
+  async (context, payload) => {
+    // 错误：「用户正在查看此项目页，必然有权限」
+    // 实际：攻击者可通过 invoke 传入任意 projectId
+    return await kvs.get(`project-settings-${payload.projectId}`);
+  },
+);
+```
+
+安全模式
+
+```typescript
+import { Resolver, authorize } from '@pc-nexus/core';
+import { api } from '@pc-nexus/core';
+
+const resolver = new Resolver();
+
+// 安全 - 删除前校验所有权
+resolver.define<{ commentId: string }, void>(
+  'deleteComment',
+  async (context, payload) => {
+    const results = await ces.entity<CommentEntity>('comments')
+      .find(cb => cb.field('id').eq(payload.commentId));
+    const comment = results.data[0];
+    if (!comment) throw new Error('Comment not found');
+
+    // 校验请求用户拥有该评论
+    if (comment._created_by !== context.user!.id) {
+      throw new Error('Not authorized to delete this comment');
+    }
+    await ces.entity<CommentEntity>('comments').delete(cb => cb.field('id').eq(payload.commentId));
+  },
+);
+
+// 安全 - 服务端校验管理员角色
+resolver.define<Record<string, never>, unknown>(
+  'getSecretConfig',
+  async (context) => {
+    const perms = await authorize.getUserPermissions('global', undefined, context.user!.id);
+    const isAdmin = perms.some(p => p.key === 'pca:global:app:manage:installation');
+    if (!isAdmin) throw new Error('Admin access required');
+    return await kvs.get('admin-config', { secret: true });
+  },
+);
+
+// 安全 - 直接返回 PingCode API 数据（无需额外校验）
+resolver.define<{ projectId: string }, unknown>(
+  'getProjectInfo',
+  async (context, payload) => {
+    // 直接代理 PingCode API 时，as:"user" 会自动强制权限：
+    // - 有权限 → 返回数据
+    // - 无权限 → 返回 403/404
+    const res = await api.invoke(`/v1/projects/${payload.projectId}`, {
+      as: 'user',
+      userId: context.user!.id,
+    });
+    return res.json();
+  },
+);
+
+// 安全 - 返回应用存储数据前，先通过 PingCode API 校验访问权限
+resolver.define<{ projectId: string }, unknown>(
+  'getAppProjectData',
+  async (context, payload) => {
+    // 为什么需要这步：我们返回的是 KVS/CES 中的应用数据，
+    // 存储本身不做 PingCode 权限校验，必须先验证用户对该项目的访问权。
+    const probe = await api.invoke(`/v1/projects/${payload.projectId}`, {
+      as: 'user',
+      userId: context.user!.id,
+    });
+    if (!probe.ok) throw new Error('Project not found or access denied');
+
+    return await kvs.get(`project-data-${payload.projectId}`);
+  },
+);
+
+// 安全 - NOS 文件下载前按 key 前缀做授权
+resolver.define<{ keys: string[] }, { items: Array<{ key: string; url: string }> }>(
+  'downloadFiles',
+  async (context, payload) => {
+    const userPrefix = `user-${context.user!.id}/`;
+    const allowed = payload.keys.filter(k => k.startsWith(userPrefix));
+    if (allowed.length !== payload.keys.length) {
+      throw new Error('One or more files are not accessible');
+    }
+    const items = [];
+    for (const key of allowed) {
+      const url = await nos.createDownloadUrl(key);
+      items.push({ key, url });
+    }
+    return { items };
+  },
+);
+```
+
+检测清单
+
+- [ ] 列出所有 `resolver.define`，按敏感度分类（读/写/删/管理员）。
+- [ ] 对每个写/删/管理员 Resolver，验证是否存在授权逻辑。
+- [ ] 检查授权是否使用可信来源（`context.user.id`、`authorize.getUserPermissions()`、PingCode API），而非 payload。
+- [ ] 验证所有权检查与存储中的权威数据比对，而不是信任客户端声明。
+- [ ] 查找访问 `kvs.get(..., {secret:true})` 或执行变更但无检查的 Resolver。
+- [ ] 对名称暗示管理员用途（admin/secret/export/deleteAll/impersonate）的 Resolver，确认强制了服务端授权。
+- [ ] 对 PJM 应用：检查 payload 中的 workitemId/projectId 是否先通过 PingCode API 或 authorize 校验。
+- [ ] 对 Wiki 应用：检查 pageId/spaceId 是否先通过 API 校验。
+- [ ] 对 Ship/TestHub/DevOps 资源执行类似校验。
+- [ ] 不要假设 UI 上下文提供授权——即使是来自已认证前端的触发。注意可能的误报：识别调用链每一步以判断真实威胁。
+
+可不需要授权检查的合法例外
+
+以下场景资源 ID 校验可能不需要，用于抑制误报：
+
+1. 仅访问按 `context.user.id` 键控的用户自有数据：
+   ```typescript
+   resolver.define('getMyPreferences', async (context) => {
+     return await kvs.get(`user-prefs-${context.user!.id}`);
+   });
+   ```
+
+2. 全局/公开数据，无敏感或用户特定信息：
+   ```typescript
+   resolver.define('getFeatureFlags', async () => {
+     return await kvs.get('global-feature-flags');
+   });
+   ```
+
+3. 资源 ID 来自可信 `context`（而非 payload），例如由平台在扩展数据中提供且不会被用户影响的标识：
+   ```typescript
+   resolver.define('getConfigData', async (context) => {
+     const projectId = context.extension?.data?.project?.id; // 平台提供
+     return await getProjectData(projectId, context);
+   });
+   ```
+   注意：Custom UI 场景下 `extension.data` 的内容可能被前端影响，授权时仍应结合服务端校验。
+
+需要授权的红旗场景
+
+- 资源 ID 来自 `payload`（用户可控）。
+- 访问非当前用户的数据。
+- 任何变更操作。
+- 访问密钥或敏感配置。
+- 跨资源操作（在查看项目 A 时访问项目 B 的数据）。
+- 生成 NOS 预签名下载/上传 URL。
+- 调用 `api.invoke(..., { as: "app" })`。
+
+常见授权来源（可信）
+
+- `context.user.id`：经过认证的用户 ID。
+- `context.team.id`、`context.installation.id`：租户/安装上下文。
+- `authorize.getUserPermissions(type, id?, userId?)`：返回 `{key, has_permission}[]`，资源类型包括 product/project/library/space/idea/ticket/workitem/testcase/page/global。
+- `authorize.getPermissionPoints()`：所有可用权限点目录（`pca:*`）。
+- 以 `as:"user"` 调用 PingCode REST API（无权限时由 PingCode 强制 403/404）。
+- 存储中的所有权数据（CES 实体的 `_created_by` 等元数据）。
+
+常见反模式（不可信）
+
+- `payload.isAdmin`、`payload.userRole`、`payload.hasPermission` —— 客户端可伪造。
+- 假设 display 条件能阻止访问。
+- 仅依赖前端传入的 `context.extension.data.*` 做授权。
+
+PoC / 测试线索
+
+- 通过 Bridge 用篡改后的 payload 直接调用 Resolver：
+  ```typescript
+  import { invoke } from '@pc-nexus/bridge';
+  await invoke('deleteComment', { commentId: 'other-users-comment' });
+  await invoke('getSecretConfig', {});
+  await invoke('adminAction', { isAdmin: true });
+  ```
+- 以低权限用户访问他人所有的资源。
+- 绕过 UI，直接以 GraphQL/Bridge/脚本调用敏感 Resolver。
+- 在 payload 中伪造管理员工具字段。
+
+修复建议（咨询）
+
+- 将所有 Resolver payload 视为不可信的攻击者输入。
+- 在每个敏感 Resolver 开头实现授权检查。
+- 使用 `context.user.id` 标识用户，不要使用 payload 字段。
+- 使用 `authorize.getUserPermissions()` 或 PingCode API 校验权限。
+- 返回不泄漏资源存在性的通用错误（如「Forbidden」而非「Not found vs Forbidden」）。
+- NOS 下载/删除必须做 key 前缀/所有权校验。
+- 事件处理器中 `context.user` 为 undefined，不应假定用户身份；任何高权限操作必须独立校验来源。
+
+报告指南
+
+- 记录每个缺失授权的 Resolver 函数名与文件位置。
+- 描述未受保护的敏感操作。
+- 提供展示未授权访问的 PoC 载荷。
+- 映射到 CWE-862；注明 display 条件是否造成虚假安全感。

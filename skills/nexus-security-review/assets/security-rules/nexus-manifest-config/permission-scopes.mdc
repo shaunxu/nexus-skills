@@ -1,0 +1,137 @@
+---
+description: 审查 Nexus 应用权限 scopes 是否遵循最小权限与使用必要性
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 应用在 manifest `permissions.scopes` 中声明所需 scopes。过宽的 scopes 违反最小权限原则，并在应用被攻破或被滥用时扩大影响。
+- Scopes 分类：
+  - Nexus 平台 scopes：`pcp:read:app:token`、`pcp:read:user:token`、`pcp:storage:app`
+  - PingCode 产品 scopes：按产品（global、pjm、ship、wiki、testhub、devops）与读/写粒度，例如：
+    - `pcp:read:pjm:workitem`、`pcp:write:pjm:workitem`
+    - `pcp:read:wiki:page`、`pcp:write:wiki:page`
+    - `pcp:read:global:team`、`pcp:write:global:security`
+  - 自定义 scopes：exposer 中定义，必须以 `ncp:` 开头，最多 16 个。
+- 相关 CWE：CWE-269（权限管理不当）、CWE-732（权限分配不正确）。
+- 宽泛 scopes 通常属于低严重性问题，但配合缺失的运行时授权检查可放大为严重漏洞。
+
+范围与信号
+
+- Manifest 位置：`permissions.scopes[]`、`exposer.scopes[]`。
+- 风险指标：
+  - 代码中未使用的 scope。
+  - 仅需要 read 却申请了 write。
+  - 申请了配置/管理类 scope（如 `pcp:write:*:configuration`、`pcp:write:global:security/permission`）却无管理功能。
+  - 存在更细粒度 scope 时使用更宽泛的 scope（例如申请 `pcp:write:pjm:project` 仅用于读取工作项）。
+  - 同时申请 `pcp:read:user:token` 与 `pcp:read:app:token` 但 remote 未严格授权。
+  - 自定义 scope 命名不清晰、粒度过粗（例如 `ncp:admin`）或未在路由中正确使用。
+
+Scopes 类别（Nexus）
+
+```yaml
+scopes:
+  # 平台 scopes
+  - pcp:storage:app          # 使用 KVS/CES/NOS 必需
+  - pcp:read:user:token      # remote auth.userToken 必需
+  - pcp:read:app:token       # remote auth.appToken 必需
+
+  # 产品 scopes（读，较低风险）
+  - pcp:read:pjm:workitem
+  - pcp:read:wiki:page
+  - pcp:read:ship:idea
+  # 产品 scopes（写，较高风险）
+  - pcp:write:pjm:workitem
+  - pcp:write:wiki:page
+  - pcp:write:ship:ticket
+  # 管理类 scopes（最高风险）
+  - pcp:write:pjm:configuration
+  - pcp:write:global:security
+  - pcp:write:global:permission
+```
+
+检测流程
+
+```md
+1. 从 manifest.yaml 提取 scopes 列表。
+2. 对每个 scope：
+   a. 在代码库中搜索需要该 scope 的 API 调用（api.invoke 路径、remote auth、storage 使用）。
+   b. 若未找到使用 → 标记为潜在冗余。
+   c. 若为写 scope → 确认存在写操作（POST/PUT/PATCH/DELETE）。
+   d. 若为管理/配置 scope → 确认确有管理功能。
+   e. 若为 token scope → 确认对应 remote 配置并审查其使用方式。
+3. 检查是否存在「读→写→管理」的逐级放大。
+4. 对自定义 ncp: scopes 检查命名、粒度及在 exposer.routes[].scopes 中的使用。
+```
+
+分析模式
+
+```typescript
+// pcp:read:pjm:workitem
+api.invoke('/v1/workitems/...', { method: 'GET' });
+
+// pcp:write:pjm:workitem
+api.invoke('/v1/workitems/...', { method: 'POST' });
+api.invoke('/v1/workitems/...', { method: 'PUT' });
+api.invoke('/v1/workitems/...', { method: 'DELETE' });
+
+// pcp:storage:app
+kvs.get/set/delete, ces.entity(...).insert/update/find/delete, nos.*
+```
+
+常见过权模式
+
+```yaml
+# 过权 - 写 scope 但代码仅做 GET
+permissions:
+  scopes:
+    - pcp:write:pjm:workitem   # 代码中只调用 GET /v1/workitems
+
+# 过权 - 配置 scope 用于只读展示
+permissions:
+  scopes:
+    - pcp:write:pjm:configuration # 仅展示配置，不修改
+
+# 过权 - 宽泛 scope 而实际只访问单一资源
+permissions:
+  scopes:
+    - pcp:write:wiki:space       # 实际只写页面，应使用 pcp:write:wiki:page
+```
+
+检测清单
+
+- [ ] 列出 manifest 中所有 scopes。
+- [ ] 对每个 scope，grep 代码中需要它的 API/操作。
+- [ ] 标记无对应使用的 scope。
+- [ ] 检查写 scope 是否可降级为读。
+- [ ] 验证管理 scope 是否有对应管理功能。
+- [ ] 对比 PingCode scope 目录，优先选择最细粒度的 scope。
+- [ ] 记录为「未来功能」预留但当前未使用的 scope（应在实际使用时再声明）。
+- [ ] 自定义 `ncp:` scopes：命名遵循动词+名词（如 `ncp:report:read`），在 `exposer.routes[].scopes` 中精确分配，不使用 `ncp:admin` 等粗粒度 scope。
+- [ ] 确认 `pcp:read:user:token` / `pcp:read:app:token` 仅在对应 remote 中实际需要时才声明。
+
+PoC / 测试线索
+
+- 移除未使用的 scope 后重新部署，验证应用功能仍正常。
+- 将写 scope 降级为读后测试是否失败。
+- 将每个 `api.invoke` 调用映射到其所需 scope。
+- 对 remote 抓包，确认仅在必要时携带 token。
+
+修复建议（咨询）
+
+- 移除实际代码路径不需要的 scopes。
+- 在不执行写操作时将写 scope 降级为读。
+- 用更细粒度 scope 替换宽泛 scope。
+- 为每个保留的 scope 文档化其用途（提交说明/PR 描述）。
+- 将 scope 审查加入部署检查清单。
+- 未来功能所需 scope 应在实现时再声明，不要预先申请。
+- 对自定义 `ncp:` scopes，遵循最小权限与动词+名词命名，按路由绑定最小集合。
+
+报告指南
+
+- 列出所有已声明 scopes 及其使用状态。
+- 高亮未使用或过权的 scope。
+- 给出具体的降级/移除建议。
+- 注明每个不必要 scope 的影响面。
+- 映射到 CWE-269；引用最小权限原则。

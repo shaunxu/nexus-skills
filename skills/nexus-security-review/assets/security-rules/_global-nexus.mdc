@@ -1,0 +1,126 @@
+---
+description: 针对 PingCode Nexus 应用源代码的全局白盒安全审查指南
+globs:
+alwaysApply: true
+---
+
+- 使用精确、可操作的结论，尽量减少冗长描述。优先提供具体文件路径和引用的代码片段；不要直接提议代码编辑。
+- 对每个问题，明确追踪数据流：来源（不可信输入）→ 校验/净化 → 汇聚点（危险操作/API）。
+- 对每个发现提供：可利用性、影响、实用的修复建议（仅作咨询）、测试线索/PoC 以及参考资料（CWE 与 PingCode/Nexus 文档）。
+- 指南须紧扣 Nexus 平台特性：`manifest.yaml`、扩展点定义、Resolver 处理器、Bridge 调用、Webhook 触发器、remotes、权限 scopes、存储（KVS/CES/NOS）以及外部集成。
+- 优先使用自动挂载（Auto Attached）规则进行目录范围检查，使用智能体请求（Agent Requested）规则处理特定漏洞类别。
+
+工作模式
+
+- 作为白盒 Nexus 安全审查的审计/咨询助手；不要修改应用代码或提供补丁 diff。
+- 输出聚焦于：
+  1) 数据流追踪（来源 → 校验器/净化器 → 汇聚点）
+  2) 风险与可利用性分析
+  3) 复现步骤与 PoC 载荷/请求
+  4) 影响及受影响文件/组件
+  5) 参考资料（CWE 与所使用的 Nexus 文档页面）
+- 需要示例时，引用现有应用代码并给出代码引用（start:end:path）。避免重写应用代码。
+
+Nexus 分析清单
+
+- 首先定位并审查 `manifest.yaml`：
+  - `permissions.scopes`：最小权限原则，检查是否存在冗余、过期或过宽的 scope。
+  - `permissions.external.fetch.backend/client` 与 `permissions.content`：检查出站/CSP 风险（`unsafe-inline`、`unsafe-eval`、过宽域名、通配符滥用）。
+  - `extensions` 条目（扩展点 target、resource、resolver.function / resolver.endpoint、display 条件）。
+  - `event.triggers`（system、lifecycle、webhook、scheduled、app）与 `event.registries`。
+  - `remotes` 信任边界、baseUrl、auth.userToken / auth.appToken 配置及其所需 scopes。
+  - `endpoints`（将扩展或事件桥接到 remote）以及 `exposer`（自定义 REST API、自定义 `ncp:` scopes）。
+  - `environment.variables` 是否仅用于非敏感配置；密钥应通过 KVS `secret` 或安全的凭据管理存放。
+  - `storage.entities`（CES 实体、属性、索引、迁移限制）。
+- 构建执行映射：
+  - Custom UI 入口 → Bridge `invoke()` / `remote.invoke()` / `api.invoke()` → Resolver / Endpoint / Remote 处理器。
+  - 后端通过 `api.invoke(path, { as: "app" | "user", userId })` 调用 PingCode REST API；对敏感变更必须先做权限校验。
+  - 后端 `fetch.request(url, options)` 外部调用；目标域名必须在 manifest `permissions.external.fetch.backend` 中声明。
+  - `remote.invoke(remoteKey, options)` 调用远端服务；Nexus 自动附加 NIT（Nexus Invocation Token，RS256 JWT），远端必须验证。
+- 识别认证/授权边界：
+  - 对每个敏感操作验证 Resolver 端的授权。
+  - 将浏览器提供的上下文视为不可信，不得用于授权决策。
+  - 对使用 `as: "app"` 的操作，在写/删除动作之前验证显式权限（使用 `authorize.getUserPermissions()` / `getPermissionPoints()` 或 PingCode 权限校验接口）。
+  - `display` 条件仅在客户端生效，可通过 DevTools 篡改，绝不能作为安全边界。
+- 枚举未认证/外部入口点：
+  - Webhook 触发器是公开 URL，Nexus 平台**不提供任何内置认证**；必须在应用内自行实现签名校验、时间戳/nonce 防重放。
+  - `exposer` 自定义 REST API 通过 `ncp:` scope 控制访问；需验证 scope 设计和处理函数授权。
+  - 系统事件/生命周期事件/定时事件处理器：确认仅暴露预期操作；事件以 SYSTEM 身份运行，资源级权限可能缺失。
+
+Nexus 平台安全模型要点
+
+- Nexus 后端运行在 serverless FaaS 隔离环境中：应用之间互相隔离；运行时实例可能被复用（warm start），因此**禁止在模块级全局变量中存放租户/用户相关数据**。
+- 文件系统仅 `/tmp` 可写且为短暂存储，不得持久化数据；不得将密钥、令牌写入 `/tmp`。
+- 出站流量默认拒绝，必须通过 manifest 显式声明域名；后端按**域名**匹配（忽略协议、端口、路径），前端按完整 URI 匹配。
+- `x-nexus-*` 头为平台保留头，应用无法自行设置；受保护头（`authorization`、`host`、`content-length` 等）在 remote 调用时会被剥离。
+- Custom UI 运行在沙箱化 iframe 中：固定的 permissions policy 与 sandbox（`allow-scripts allow-same-origin allow-forms allow-modals allow-downloads allow-pointer-lock`），无法访问宿主 DOM、cookie、localStorage；所有集成必须通过 `@pc-nexus/bridge`。
+- Custom UI 不得使用 `window.parent`、`window.top`、`postMessage('*')`，不得读取宿主凭据/会话/token。
+- 应用无法访问或修改用户登录凭据、会话、身份、密码、权限。
+- NOS 对象存储通过预签名 URL 上传/下载；Resolver 返回预签名 URL 前必须做授权和 key 前缀校验，避免越权访问他人文件。
+- 托管数据按企业（team/installation）隔离；卸载后软删除 30 天，之后永久删除。
+
+Nexus 专项审查优先级
+
+- 以下为重点关注领域，并非详尽清单。发现任何其他漏洞类别也应报告。
+- 以本全局规则为基线，并应用所有相关的 Nexus 分类专项规则（分类规则提供更深入的检查与示例）。
+- 认证与授权
+  - 检查应用级 scopes 与运行时权限校验；强制最小权限、默认拒绝。
+  - 标记缺失的对象级授权（通过工作项/页面/用例/项目/空间等标识符导致的 IDOR 类访问）。
+  - 校验读取 `context` 与执行跨团队/跨项目操作时的租户/用户边界。
+  - 事件处理器以 SYSTEM 身份执行时，必须自行做资源级权限校验。
+- 租户隔离与数据泄漏
+  - 验证每条数据读/写路径都强制租户上下文，包括 KVS key、CES 查询条件、NOS key、remote 调用。
+  - 审查全局缓存、模块级状态、全局变量在运行时的复用，确保租户/用户数据不会在请求、调用或安装之间泄漏。
+  - 标记任何跨租户访问路径——某个租户的标识符可以读取或修改另一租户的数据，包括执行能与全局变量或 FaaS 运行时环境交互的任意代码而导致跨租户数据泄漏。
+  - 检查日志、错误消息、响应、导出、事件、分析/遥测载荷中是否暴露敏感数据。
+  - 确认 PII、访问令牌、凭据、应用密钥在 UI、函数、remote 边界上的最小化与脱敏。
+- 输入校验与注入
+  - 追踪来自 UI、Webhook、事件、remote 回调的不可信载荷到汇聚点（查询、模板、命令执行、出站请求、CES 条件、NOS key）。
+  - 在 Resolver、Endpoint、Webhook、事件处理器边界验证严格 schema。
+  - 特别注意：Nexus 不提供 SQL API，但 CES 条件构造器、NOS key、`api.invoke` 路径、`fetch.request` URL、`innerHTML`/`dangerouslySetInnerHTML` 仍是注入汇聚点。
+- 密钥与敏感数据
+  - 标记源码/配置中的硬编码凭据、API Key、Token。
+  - 验证安全密钥处理模式（KVS `secret: true` 加密存储；`environment.variables` 用于部署期非敏感配置）；避免记录密钥或令牌。
+  - 验证凭据/令牌存储已最小化、限定作用域并受保护。
+  - 远端接收的 `x-nexus-app-token`、`x-nexus-user-token` 视为不透明令牌，不得日志记录；如需使用，按 NIT 验证流程处理。
+- 出站、remotes、endpoint 与其他集成
+  - 确认所有出站域名在 manifest 权限中显式 allowlist。
+  - 标记过宽的外部权限与不安全的 CSP 放宽。
+  - 审查 remote 信任假设、NIT JWT 验证（`iss=nexus/invocation-token`、`aud=nexus`、RS256、`kid=nexus-nit-1`、5 分钟过期、JWKS 缓存）、token 转发边界。
+  - 对 `remotes[].auth.userToken` / `appToken` 验证是否申请了 `pcp:read:user:token` / `pcp:read:app:token` scope。
+- 会话类与请求保护
+  - 对 Webhook 与 exposer 自定义 API，验证请求认证、完整性校验、防重放控制与滥用保护（限流/节流）。
+  - UI Invoke 超时 5 秒、请求 512KB、响应 5MB；其他函数 60 秒；不得在 UI Invoke 中执行长任务，应使用异步队列。
+
+强制报告标准（硬性要求）
+
+- 以下类别为最低预期报告要素，不限制可报告内容。
+- 当存在 Nexus 分类专项规则时，除遵循本全局基线外，还需与专项规则在报告细节和术语上保持一致。
+- 以 Markdown 创建安全审计报告，总结整体安全态势，内容包括：攻击面与入口点；认证与授权；租户隔离与跨租户访问风险；输入校验与注入路径；外部出站/remotes 与信任边界；密钥/令牌/PII 处理与泄漏向量；存储/KVS/CES/NOS/数据生命周期控制；Webhook 与事件滥用路径；高风险汇聚点与利用链；补偿控制；需要运行时验证的证据缺口。
+- 对每个**已确认可利用的发现**使用 CVSS v3.1 评分，包含：
+  - 向量字符串（例如 `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:L`）
+  - 基础评分（0.0-10.0）
+  - 严重性等级（None/Low/Medium/High/Critical）
+  - 逐项指标理由，与代码证据和利用路径绑定
+  - 按 CVSS 严重性与安全影响排序；若两个发现 CVSS 相同，将真实业务/安全影响更大者排在前面。
+- 报告发现时尽量提供代码证据：包含文件路径、函数/符号以及证明从来源到汇聚点可达性和缺失/不足控制的代码片段。
+- 强制可复现 PoC 格式（硬性要求）
+  - 对每个发现，提供可复现的动态测试计划和清晰的 PoC，以编号步骤呈现：准备、确切执行命令/请求、实际请求载荷（例如 Nexus Bridge `invoke` 调用、`curl` Webhook 请求、`api.invoke` 路径）、成功判据、预期的脆弱行为、以及用于对照的安全/预期行为。
+  - 提供可复制粘贴的命令（不要伪代码），至少使用以下之一：
+    - `curl` 请求，或
+    - `nexus` CLI 命令（例如 `nexus logs`），或
+    - 完整的 PoC 脚本（如 `poc.js`、`poc.ts`）
+  - 包含完整请求路径、方法、头和 body
+  - 包含具体载荷值；如未知，先提供获取这些值的确切发现命令，再提供最终命令，并以占位符清晰标注为运行时值。
+- 除非已证明可利用性，否则不要将日志/错误处理风险、加固建议或遥测/隐私问题标记为漏洞。应在「已确认可利用发现」之后的「安全关注点（需验证）」章节中报告。
+  - 但应避免漏报关键类别（RCE、XSS、硬编码密钥、SSRF）。
+- 明确指出需要运行时验证的假设、未知项和证据缺口。
+- 仅提供进一步测试建议，避免直接编辑代码进行修复。避免推测性或过宽的更改。
+- 忽略测试文件中不可利用的安全漏洞。
+- 对依赖项发现，包含：包名、已安装版本、存在漏洞的版本范围、已修复版本/无修复状态、升级路径、严重性以及 CVE/GHSA/CWE 参考，并提供 lockfile 路径证据。
+- 任何生成的输出/扫描器产物必须存放在被审查项目目录**之外**的单一专用临时目录中（由 SKILL.md 执行流程通过 `mktemp -d` 创建并记录其路径，例如 `$ARTIFACT_DIR`）。NEVER 写入被审查项目的源码树，包括其根目录、项目内的 `security-audit-artifacts/` 或任何子目录，即使用户的 `.gitignore` 已忽略对应路径也不例外。
+
+备注
+
+- 子目录中的嵌套规则应在这些文件夹中的文件处于审查范围时自动挂载。
+- 保持规则文件聚焦和简洁；将大主题拆分为 Nexus 领域下的专用子规则。

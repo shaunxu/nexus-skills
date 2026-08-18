@@ -1,0 +1,84 @@
+---
+description: 审查 Nexus 应用出站域名列表中具有误导性的条目（含协议/路径）
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 应用仅可 `fetch.request` 或访问 manifest 中声明的域名；目标域名不匹配时网络请求被平台阻止。
+- Manifest 允许在外部权限条目中指定完整 URI（含协议和路径），但前后端行为存在关键差异：
+  - **前端（Custom UI）**：目标 URI 必须与条目**完整匹配**。
+  - **后端（函数/事件处理器）**：仅校验目标**域名**（domain），协议、端口与路径均被**忽略**。
+- 一些应用在动态构造请求 URL 时依赖这份权限列表跳过输入校验；由于后端实际限制比预期更宽松，开发者本以为被阻止的请求可能被放行，从而容易导致 SSRF 类漏洞。
+- 相关 CWE：CWE-942（跨域策略过宽）、CWE-918（SSRF）。
+
+范围与信号
+
+- Manifest 位置：`permissions.external.fetch.backend`、`permissions.external.fetch.client`、`permissions.external.fonts/styles/frames/images/media/scripts`、`remotes[].baseUrl`。
+- 风险指标：
+  - 上述条目任一包含协议前缀（`https://`、`http://`）或路径/查询字符串（`/path`、`?x=1`）。
+  - 后端代码中存在以这些域名为目标、并对路径做动态插值的 `fetch.request` 调用。
+
+检测流程
+
+```md
+1. 提取 permissions.external.* 各子键下的所有条目。
+2. 对每个条目：
+   - 是否指定了 URI 协议（http/https/ftp/...）？
+   - 是否指定了 URI 路径（以 / 开头）？
+   - 是否指定了查询字符串（?）？
+3. 对满足上述任一条件的条目：
+   - 检查该域名是否在 fetch.request / XMLHttpRequest / <img>/<script>/<a> 等中被引用
+   - 检查对应请求是否对 URI 路径做了参数化
+   - 评估参数化是否确实为静态：若任何动态部分来源于用户输入，则不能证明其安全
+4. 满足步骤 2 条件且后端存在动态路径拼接的条目为重点发现
+```
+
+分析模式
+
+```yaml
+permissions:
+  external:
+    fetch:
+      backend:
+        - 'https://api.example.com/v1/users'   # 后端实际只校验域名 api.example.com
+        - 'https://cdn.example.net/assets/img'
+      client:
+        - 'https://app.example.com/callback'    # 前端按完整 URI 匹配
+```
+
+```typescript
+// 后端示例：开发者误以为 manifest 条目限定了路径 /v1/users
+// 实际后端仅按域名放行，可请求 https://api.example.com/admin/secret
+const result = await fetch.request(
+  `https://api.example.com/${payload.path}`,
+);
+
+// 后端示例：开发者误以为协议被限定为 https
+// 实际仅按域名放行（虽然 undici 默认只支持 http/https，仍应明确校验）
+if (payload.protocol === 'http' || payload.protocol === 'https') {
+  await fetch.request(`${payload.protocol}://api.example.com/some/path`);
+}
+
+// 安全：静态字符串，未对协议/路径做参数化，未依赖 manifest 行为
+await fetch.request('https://api.example.com/v1/users/me');
+
+// 安全：在代码中显式校验协议（不依赖 manifest）
+if (payload.protocol !== 'https') throw new Error('HTTPS required');
+await fetch.request(`https://api.example.com/${staticPath(payload.resource)}`);
+```
+
+前端注意事项
+
+```typescript
+// 前端按完整 URI 匹配；动态路径仍需校验，且必须在 manifest 声明的具体 URI 之内
+// 注意：前端 fetch/资源加载的目标必须与 manifest 条目完全一致，含路径
+```
+
+报告指南
+
+- 对包含协议/路径的可疑 URI 条目简要指出即可，不要逐条罗列完整 URI；不要将 manifest 条目本身当作漏洞。
+- 明确说明：**后端只按域名匹配，协议/路径/端口均被忽略**。应用绝不能假设 manifest 条目会校验路径或协议。
+- 该问题本身不一定是漏洞，但它是缺失 SSRF 防护的**强力证据**。应结合 `@nexus-injection/ssrf.mdc` 等规则检查是否存在真实 SSRF。
+- 若发现后端存在依赖 manifest 路径/协议校验的动态 fetch，应作为重点关注，并提供相应的数据流。

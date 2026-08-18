@@ -1,0 +1,151 @@
+---
+description: 检测 Nexus 应用中通过 api.invoke、fetch.request 与 remote.invoke 导致的 SSRF 漏洞
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 应用通过以下方式发起网络请求：
+  - `api.invoke(path, options)`：调用 PingCode REST API（内部），路径仍可能因拼接而越权访问其他 REST 端点或注入查询参数。
+  - `fetch.request(url, options)`：调用外部 HTTP 服务，目标必须在 manifest `permissions.external.fetch.backend` 中声明，后端按域名匹配。
+  - `remote.invoke(remoteKey, options)`：调用 manifest `remotes` 中声明的远端服务，由平台拼接 baseUrl。
+- SSRF 发生在用户输入控制请求目标时；可能触达内网服务、云元数据端点（`169.254.169.254`）、本地服务，或被利用进行端口扫描、数据外泄。
+- 相关 CWE：CWE-918（SSRF）、CWE-22（路径遍历，针对 API 路径）。
+
+范围与信号
+
+- 安全模式：目标域名、路径在代码中静态确定；用户输入仅作为查询参数或经严格校验。
+- 危险模式：
+  - 在 `api.invoke` 路径中使用字符串拼接/模板插值插入用户输入（路径遍历、查询参数注入）。
+  - `fetch.request(url)` 的 url 来自用户输入（resolver payload、Webhook body、事件、URL 参数）。
+  - 在 `remote.invoke` 中动态选择 remoteKey 或通过 `path` 执行越权路径遍历。
+  - NOS `createUploadUrl` / `createDownloadUrl` 的 key 来自用户输入且未做前缀/授权校验（对象越权）。
+  - 通过 `api.invoke` 代理任意 URL（PingCode 代理被滥用为开放代理）。
+
+脆弱模式
+
+```typescript
+// 脆弱 - 在 api.invoke 路径中拼接用户输入
+const workitemId = payload.workitemId; // 攻击者可控
+await api.invoke(`/v1/workitems/${workitemId}/comments`);
+// workitemId = "../../users/me" 或 "..%2f..%2fadmin" 可能改变目标路径
+
+// 脆弱 - 直接使用用户提供的 URL
+const webhookUrl = payload.callbackUrl;
+await fetch.request(webhookUrl); // SSRF 到内网/云元数据
+
+// 脆弱 - 用户控制路径段
+const endpoint = payload.endpoint;
+await fetch.request(`https://api.example.com/v1/${endpoint}`);
+// endpoint 可能包含 "../" 或 "?admin=true"
+
+// 脆弱 - 图片/文件 URL 来自输入
+const avatarUrl = payload.avatarUrl;
+const res = await fetch.request(avatarUrl);
+
+// 脆弱 - 构造 URL 时拼接 host/path
+const url = `https://${payload.host}${payload.path}`;
+await fetch.request(url);
+
+// 脆弱 - NOS key 来自用户输入，未做所有权/前缀校验
+const url = await nos.createDownloadUrl(payload.key);
+return url; // 可下载他人文件
+```
+
+安全模式
+
+```typescript
+// 安全 - 对资源 ID 做严格格式校验
+if (!/^[A-Z]+-\d+$/.test(workitemId)) {
+  throw new Error('Invalid workitem key');
+}
+await api.invoke(`/v1/workitems/${encodeURIComponent(workId)}`);
+
+// 安全 - 使用预定义端点映射，禁止动态路径
+const ENDPOINTS = {
+  issues: '/v1/workitems',
+  projects: '/v1/projects',
+} as const;
+const ep = ENDPOINTS[payload.endpointName as keyof typeof ENDPOINTS];
+if (!ep) throw new Error('Unknown endpoint');
+await api.invoke(ep);
+
+// 安全 - 外部 URL 使用 allowlist 校验
+const ALLOWED_HOSTS = new Set([
+  'api.trusted-service.com',
+  'webhooks.example.com',
+]);
+
+function validateExternalUrl(input: string): URL {
+  const u = new URL(input);
+  if (u.protocol !== 'https:') throw new Error('HTTPS required');
+  if (!ALLOWED_HOSTS.has(u.hostname)) throw new Error('Host not allowed');
+  // 阻止云元数据/内网（即使 allowlist 配置错误也作为纵深防御）
+  if (isPrivateIp(u.hostname)) throw new Error('Private host blocked');
+  return u;
+}
+await fetch.request(validateExternalUrl(payload.callbackUrl).toString());
+
+// 安全 - NOS 下载前做前缀/授权校验
+resolver.define<{ key: string }, string>(
+  'downloadFile',
+  async (context, payload) => {
+    const userPrefix = `user-${context.user!.id}/`;
+    if (!payload.key.startsWith(userPrefix)) throw new Error('Forbidden');
+    return await nos.createDownloadUrl(payload.key);
+  },
+);
+```
+
+检测清单
+
+- [ ] 搜索 `api.invoke` 调用，检查路径是否由字符串拼接或模板插值构造。
+- [ ] 搜索 `fetch.request` 的 URL 是否动态构造；主机名、协议、路径是否来自输入。
+- [ ] 检查 `remote.invoke` 的 remoteKey 是否来自输入；path 是否包含 `..`。
+- [ ] 追踪 URL 各组件到用户输入来源（payload、Webhook body、事件、headers、query parameters）。
+- [ ] 验证外部 URL 是否经过 allowlist 校验。
+- [ ] 检查是否阻止私有 IP 段、localhost、链路本地地址。
+- [ ] 检查 NOS 上传/下载 key 是否有命名空间与授权校验。
+- [ ] 确认 manifest allowlist 中的域名在代码中确有使用，移除未使用的宽域。
+
+Nexus 环境下的 SSRF 目标
+
+```text
+# 攻击者可能尝试访问：
+- 云元数据：http://169.254.169.254/  (阿里云/华为云/AWS 等)
+- 内网服务：http://localhost:*、http://127.0.0.1:*、http://10.*、http://172.16-31.*、http://192.168.*
+- PingCode 内部管理端点（若可从函数网络到达）
+- 同 VPC 内其他客户的服务
+- 任意外网主机（用作开放代理或数据外泄）
+```
+
+注意：Nexus 后端仅允许访问 manifest 声明的域名（按域名匹配）。若 allowlist 中存在 `*` 或被攻破的宽子域通配（如 `*.amazonaws.com`、`*.aliyuncs.com`），SSRF 可触达云元数据。
+
+PoC / 测试线索
+
+- 注入路径遍历：`../`、`..%2f`、`..%252f`、`%2e%2e/`。
+- 尝试内网 IP：`127.0.0.1`、`169.254.169.254`、`[::1]`、`10.0.0.1`。
+- 测试非 HTTP 协议：`file://`、`gopher://`、`dict://`（undici 默认仅支持 HTTP(S)，但仍验证）。
+- DNS rebinding：使用攻击者控制的域名，首次解析为公网 IP，后续解析为内网 IP。
+- 使用 Burp Collaborator / webhook.site 等 OOB 渠道验证请求是否到达攻击者服务器。
+- 通过 NOS key 遍历（`../other-user/file`）测试越权下载。
+
+修复建议（咨询）
+
+- `api.invoke` 路径使用静态模板；对路径段做 `encodeURIComponent`，对 ID 使用严格格式校验。
+- 使用预定义映射表，禁止用户直接选择端点。
+- 对所有外部 URL 执行严格 allowlist 校验（hostname、protocol=HTTPS）。
+- 使用 URL 解析库，不要通过字符串拼接构造 URL。
+- 阻止私有 IP 段、localhost、链路本地/元数据地址（即使 manifest 限制域名也作纵深防御）。
+- 对 NOS key 强制用户/项目前缀，并在生成预签名 URL 前做授权检查。
+- 实施请求超时与响应大小限制。
+- 对远端响应保持最小信任，避免直接将其作为内部操作的凭据。
+
+报告指南
+
+- 记录脆弱的请求构造位置。
+- 展示从用户输入到请求 URL 的数据流。
+- 提供 SSRF PoC（使用安全的内网 webhook 捕获服务）。
+- 评估可触达内网/元数据的程度。
+- 映射到 CWE-918；注明 manifest allowlist 是否可被绕过/滥用。

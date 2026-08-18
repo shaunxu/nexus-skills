@@ -1,0 +1,147 @@
+---
+description: 检测 Nexus Custom UI 应用中的跨站脚本（XSS）漏洞
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus Custom UI 运行在 iframe 沙箱中，固定 sandbox 包含 `allow-scripts allow-same-origin`。当 manifest 的 `permissions.content.scripts` 启用 `unsafe-inline` 且用户内容未经净化即渲染时，仍可触发 XSS。
+- XSS 在 Custom UI 中可通过 Bridge 调用 `invoke`、`api.invoke`、`remote.invoke`、`store.upload/download`，以当前用户身份执行操作。
+- 相关 CWE：CWE-79（跨站脚本）。
+- 审查重点：任何启用 `unsafe-inline` / `unsafe-eval` / `blob:` 的应用，以及使用富文本/HTML 渲染的应用。
+
+XSS 在 Nexus 中成立的前提
+
+1. manifest 启用了不安全 CSP：
+   ```yaml
+   permissions:
+     content:
+       scripts:
+         - 'unsafe-inline'   # 允许内联 <script>
+         - 'unsafe-eval'     # 允许 eval/Function
+         - 'blob:'           # 允许 blob: 脚本
+   ```
+2. 用户可控内容未经净化即渲染为 HTML。
+
+范围与信号
+
+- 主要汇聚点：React 中的 `dangerouslySetInnerHTML`、Vue 的 `v-html`、Angular 的 `[innerHTML]`、原生 `innerHTML`/`outerHTML`/`insertAdjacentHTML`、`document.write`。
+- 来源：PingCode API 返回的工作项/页面/评论内容、CES/KVS 存储、Webhook 输入、自定义富文本（`@pc-nexus/capabilities` 的 richtext 输出需经 `toHtml` 后视为不可信）。
+- 注意：PingCode 部分 API 返回的内容可能已经过转义，应实测确认，不要假设。
+
+脆弱模式
+
+```tsx
+// 脆弱 - 使用 dangerouslySetInnerHTML 渲染用户内容
+function CommentDisplay({ comment }: { comment: { body: string } }) {
+  return <div dangerouslySetInnerHTML={{ __html: comment.body }} />;
+}
+
+// 脆弱 - 直接渲染 API 响应中的 HTML
+function RenderContent({ content }: { content: string }) {
+  return <div dangerouslySetInnerHTML={{ __html: content }} />;
+}
+
+// 脆弱 - 字符串替换并不等于净化
+function HtmlTag({ text }: { text: string }) {
+  const temp = `<span>${text.replaceAll('\n', '</br>')}</span>`;
+  return <div dangerouslySetInnerHTML={{ __html: temp }} />;
+}
+
+// 脆弱 - 原生 DOM 操作
+document.getElementById('output')!.innerHTML = userData;
+```
+
+安全模式
+
+```tsx
+// 安全 - 使用 DOMPurify 净化
+import DOMPurify from 'dompurify';
+
+function SafeHtmlDisplay({ htmlContent }: { htmlContent: string }) {
+  const sanitized = DOMPurify.sanitize(htmlContent);
+  return <div dangerouslySetInnerHTML={{ __html: sanitized }} />;
+}
+
+// 安全 - React 默认转义
+function CommentDisplay({ comment }: { comment: { body: string } }) {
+  return <div>{comment.body}</div>;
+}
+
+// 安全 - 基于 allowlist 的 HTML 渲染
+import { sanitize } from 'isomorphic-dompurify';
+
+function RichTextDisplay({ content }: { content: string }) {
+  const clean = sanitize(content, {
+    ALLOWED_TAGS: ['b', 'i', 'em', 'strong', 'p', 'br', 'ul', 'ol', 'li', 'a'],
+    ALLOWED_ATTR: ['href', 'title', 'rel'],
+  });
+  return <div dangerouslySetInnerHTML={{ __html: clean }} />;
+}
+```
+
+检测清单
+
+- [ ] 检查 manifest 中 `permissions.content.scripts` 是否包含 `unsafe-inline`、`unsafe-eval`、`blob:`、`data:`。
+- [ ] 若启用，搜索 `dangerouslySetInnerHTML`、`v-html`、`[innerHTML]`、`innerHTML`、`outerHTML`、`insertAdjacentHTML`、`document.write`。
+- [ ] 追溯 HTML 内容来源 —— 是否用户可控？
+- [ ] 检查渲染前是否使用 DOMPurify 等经过验证的净化器。
+- [ ] 检查是否存在 `javascript:` URL、`<a href>` 中的 JS、`<iframe srcdoc>`、SVG `<script>`、事件处理器（`onerror=`、`onload=`）。
+- [ ] 审查富文本 capability（richtext）的 HTML 输出是否被直接注入。
+- [ ] 审查后消息通信：不要使用 `postMessage('*')`，必须校验 `event.origin`。
+
+务必通过测试验证 —— 不要假设净化生效：
+
+```html
+<!-- 测试输入 -->
+<p><script>console.log("XSS")</script></p>
+<img src=x onerror=alert(1)>
+<svg onload=alert(1)>
+
+<!-- 净化后应看到转义输出 -->
+&lt;p&gt;&lt;script&gt;...
+```
+
+误报指标
+
+- 静态/常量 HTML 字符串（非用户可控）。
+- CSS-in-JS 库（styled-components）通过 dangerouslySetInnerHTML 注入样式。
+- 已经 PingCode 端点净化的内容（需实测确认）。
+- 枚举/选项类的非自由文本输入。
+
+严重性评估
+
+| 因素 | 较高严重性 | 较低严重性 |
+|------|------------|------------|
+| 内容来源 | 直接用户输入 | 间接/已转换 |
+| 持久化 | 存储型 XSS | 反射型 XSS |
+| 受害者 | 其他用户 | 仅本人 |
+| 上下文 | 管理/配置面板 | 低权限区域 |
+| CSP | `unsafe-inline` + 无 nonce | 严格 CSP、无 unsafe-inline |
+
+PoC / 测试线索
+
+- 输入：`<img src=x onerror=alert(document.domain)>`
+- 输入：`<script>console.log('XSS')</script>`
+- 输入：`<svg onload=alert(1)>`
+- 输入：`<iframe srcdoc="<script>top.invoke('adminAction',{})</script>">`
+- 在工作项评论、Wiki 页面内容、自定义字段、配置项中测试。
+- 验证当其他用户查看内容时 XSS 是否触发；尝试通过 Bridge 执行高权限操作。
+
+修复建议（咨询）
+
+- 尽可能移除 `unsafe-inline`、`unsafe-eval`、`blob:`；改用打包后的脚本。
+- 默认使用框架的文本插值（React/Vue/Angular 默认转义）。
+- 必须渲染 HTML 时使用 DOMPurify 等维护中的净化器，并配置严格 allowlist。
+- 在使用点而非仅在输入点校验与净化。
+- 富文本 capability 输出（`toHtml`）按不可信 HTML 处理。
+- 严格校验 postMessage 的 origin；禁止 `*` 目标。
+
+报告指南
+
+- 注明 manifest 是否启用 `unsafe-inline`/`unsafe-eval`。
+- 记录从来源到汇聚点的数据流。
+- 区分存储型（更高）与反射型 XSS。
+- 提供脚本执行的 PoC 载荷。
+- 映射到 CWE-79；分类为存储型/反射型/DOM 型。

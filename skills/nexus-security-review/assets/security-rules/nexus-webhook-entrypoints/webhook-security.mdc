@@ -1,0 +1,218 @@
+---
+description: 检测 Nexus Webhook 中的安全问题，包括缺失认证与输入校验
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus Webhook 触发器是公开可访问的 URL，平台**不提供任何内置认证**。应用必须自行实现签名校验、时间戳/nonce 防重放与输入校验。
+- 相关 CWE：CWE-306（关键功能缺失认证）、CWE-294（通过捕获/重放绕过认证）、CWE-352（CSRF，若 Webhook 在浏览器上下文中触发）。
+- 官方文档明确提示：Never assume webhook authentication（永远不要假设 Webhook 已被认证）。
+
+范围与信号
+
+- Manifest：`event.triggers[].type: webhook`。
+- Handler：`WebhookEventHandler`，接收 HTTP 请求并返回 HTTP 响应。
+- 风险点：
+  - 无认证头校验。
+  - 无签名/HMAC 验证。
+  - 无防重放（时间戳/nonce）。
+  - 直接解析并信任 `event.body`。
+  - 在未认证情况下执行敏感操作（写 PingCode、写存储、触发远程调用、发送通知）。
+  - 使用普通字符串比较校验签名（时序攻击）。
+
+脆弱模式
+
+```typescript
+// 脆弱 - 完全无认证
+const handler: WebhookEventHandler = async (context, event) => {
+  const data = JSON.parse(event.body as string);
+
+  // 直接处理不可信输入
+  await kvs.set(`data-${data.id}`, data.payload);
+
+  // 触发敏感操作
+  await notifyUsers(data.users);
+
+  return { statusCode: 200 };
+};
+
+// 脆弱 - 弱认证（硬编码密钥、普通字符串比较）
+const handler: WebhookEventHandler = async (context, event) => {
+  const apiKey = event.headers['x-api-key']?.[0];
+  if (apiKey !== 'secret-api-key-12345') { // 硬编码 + 非恒定时间比较
+    return { statusCode: 401 };
+  }
+  // 处理请求...
+};
+
+// 脆弱 - 有签名但无防重放
+const handler: WebhookEventHandler = async (context, event) => {
+  const signature = event.headers['x-signature']?.[0];
+  if (verifySignature(event.body, signature)) {
+    // 签名合法但可能被无限次重放
+    await processPayment(JSON.parse(event.body as string));
+  }
+  return { statusCode: 200 };
+};
+```
+
+安全模式
+
+```typescript
+import crypto from 'crypto';
+import { kvs, ces } from '@pc-nexus/core';
+import type { WebhookEventHandler, NexusAppContext } from '@pc-nexus/core';
+
+interface WebhookNonce {
+  nonce: string;
+  installation_id: string;
+  created_at: number;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+const MAX_AGE_MS = 5 * 60 * 1000; // 5 分钟
+
+const handler: WebhookEventHandler = async (
+  context: NexusAppContext,
+  event,
+) => {
+  // 1. 提取签名头（头是 string[]）
+  const signature = event.headers['x-signature']?.[0];
+  const timestamp = event.headers['x-timestamp']?.[0];
+  const nonce = event.headers['x-nonce']?.[0];
+  if (!signature || !timestamp || !nonce) {
+    return { statusCode: 401, body: 'Missing auth headers' };
+  }
+
+  // 2. 校验时间戳新鲜度
+  const requestTime = parseInt(timestamp, 10);
+  if (Number.isNaN(requestTime) || Math.abs(Date.now() - requestTime) > MAX_AGE_MS) {
+    return { statusCode: 400, body: 'Request expired' };
+  }
+
+  // 3. 检查 nonce 是否已使用（防重放）。
+  // nonce 存储于 CES，并在 (installation_id, nonce) 上建有唯一索引；
+  // 先查询可快速拒绝，插入时的唯一键冲突可挡住并发重放。
+  const nonceRepo = ces.entity<WebhookNonce>('webhook_nonces');
+  const existing = await nonceRepo.find({
+    filter: { installation_id: context.installation.id, nonce },
+    limit: 1,
+  });
+  if (existing && existing.length > 0) {
+    return { statusCode: 400, body: 'Nonce already used' };
+  }
+
+  // 4. 从 KVS secret 读取签名密钥（不要硬编码）
+  const secret = await kvs.get<string>('webhook-secret', { secret: true });
+  if (!secret) return { statusCode: 500, body: 'Server not configured' };
+
+  // 5. 计算期望 HMAC 签名（覆盖 timestamp、nonce、原始 body）
+  const bodyStr = typeof event.body === 'string' ? event.body : JSON.stringify(event.body);
+  const payload = `${timestamp}.${nonce}.${bodyStr}`;
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(payload)
+    .digest('hex');
+
+  if (!safeEqual(signature, expected)) {
+    return { statusCode: 401, body: 'Invalid signature' };
+  }
+
+  // 6. 记录 nonce 以防重放。
+  // 注意：Nexus KVS 的 set 选项仅支持 { policy, secret }，不提供 TTL/过期字段。
+  // 这里使用 CES 实体存储 nonce（manifest storage.entities 中声明 webhook_nonces：
+  // nonce/installation_id/created_at，并对 (installation_id, nonce) 建唯一索引）；
+  // 通过 scheduled 事件定期删除 created_at 早于 (now - MAX_AGE_MS) 的记录来完成过期清理。
+  // 唯一索引冲突意味着并发重放，必须拒绝。
+  try {
+    await nonceRepo.insert({
+      nonce,
+      installation_id: context.installation.id,
+      created_at: Date.now(),
+    });
+  } catch (err) {
+    return { statusCode: 400, body: 'Nonce already used' };
+  }
+
+  // 7. 严格校验请求 body
+  let data: unknown;
+  try {
+    data = validateAndParse(bodyStr);
+  } catch {
+    return { statusCode: 400, body: 'Invalid payload' };
+  }
+
+  // 8. 处理已验证的请求
+  await processWebhook(data, context);
+
+  return { statusCode: 200 };
+};
+
+export default handler;
+```
+
+检测清单
+
+- [ ] 识别 manifest 中所有 `event.triggers` 且 `type: webhook` 的处理器。
+- [ ] 对每个 handler，检查是否处理签名头。
+- [ ] 验证签名比较是否使用恒定时间比较（`crypto.timingSafeEqual`）。
+- [ ] 检查时间戳新鲜度窗口（5-15 分钟）。
+- [ ] 检查 nonce/幂等键校验与状态存储。
+- [ ] 评估触发器执行的操作敏感度。
+- [ ] 在处理 body 前验证输入（schema 校验）。
+- [ ] 检查 Webhook 密钥是否来自 KVS secret 或安全配置，而非硬编码。
+- [ ] 检查是否避免在日志中记录签名/密钥/敏感 body。
+
+认证方式对照
+
+| 方式 | 安全级别 | 说明 |
+|------|----------|------|
+| 无 | 严重风险 | 对敏感操作绝不接受 |
+| API Key（头） | 低 | 易泄漏、无防重放 |
+| HMAC 签名 | 中 | 良好，应配合时间戳 |
+| HMAC + 时间戳 | 较好 | 加 nonce 可完整防重放 |
+| HMAC + 时间戳 + Nonce | 最佳 | 完整防重放 |
+| mTLS / 双向 TLS | 高 | Nexus Webhook 不支持客户端证书/mTLS，不可作为认证手段 |
+
+PoC / 测试线索
+
+- 不带任何认证头直接 `curl` Webhook URL：
+  ```bash
+  curl -X POST 'https://{appId}.webhook.pingcodex.com/x1/{webhookId}' \
+    -H 'Content-Type: application/json' \
+    -d '{"malicious":true}'
+  ```
+- 捕获合法签名请求后使用相同 body 重放。
+- 使用过期时间戳（早于/晚于 5 分钟）测试。
+- 使用同一 nonce 两次发送请求。
+- 发送畸形 JSON、XML、表单或超大 body（请求上限 512KB）。
+- 伪造 `Content-Type` 测试解析逻辑。
+- 暴力枚举签名以验证时序差异（若非恒定时间比较）。
+
+修复建议（咨询）
+
+- 为所有 Webhook 实现 HMAC 签名校验（建议 SHA-256）。
+- 签名覆盖 timestamp、nonce 与原始 body；拒绝旧请求（建议 5 分钟窗口）。
+- 使用 nonce 并存入 CES 防止重放（对 (installation_id, nonce) 建唯一索引）；通过 scheduled 事件清理过期记录（KVS 不支持 TTL）。
+- 使用 `crypto.timingSafeEqual` 进行所有密钥/签名比较。
+- 通过 `kvs.set(..., { secret: true })` 存储 Webhook 密钥，不要硬编码。
+- 使用 schema 校验（zod/joi）验证 body；按 `Content-Type` 正确解析。
+- 记录认证失败以供监控；不要在日志中记录签名或密钥。
+- 对敏感操作额外做幂等设计（例如 `idempotency-key`）。
+- 若来源服务支持 IP 允许列表，配合使用（Nexus 出站 IP 是否固定需参考平台文档）。
+
+报告指南
+
+- 记录每个 Webhook 模块及其 handler 文件位置。
+- 描述缺失的认证/校验控制。
+- 评估所执行操作的敏感度。
+- 提供展示未认证访问的 PoC（curl 或脚本）。
+- 映射到 CWE-306、CWE-294、CWE-352。

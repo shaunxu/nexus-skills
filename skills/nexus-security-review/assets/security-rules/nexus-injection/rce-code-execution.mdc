@@ -1,0 +1,163 @@
+---
+description: 检测 Nexus 应用中的远程代码执行与不安全动态代码求值
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 后端运行于 serverless FaaS，运行时实例可能被多个调用复用（warm start）。若应用通过 `AsyncFunction`、`new Function()`、`eval()` 等执行用户提供的代码，不仅导致任意代码执行，还可能通过污染全局/模块级状态造成跨租户数据泄漏。
+- 相关 CWE：CWE-94（代码注入）、CWE-95（Eval 注入）、CWE-1189（共享资源隔离不当）。
+- 严重性：严重 —— 可导致任意代码执行、数据外泄、跨租户数据泄漏。
+
+范围与信号
+
+- 危险 API（同一全局作用域 —— 严重）：
+  - `eval(userScript)`
+  - `new Function('param', userScript)`
+  - `new AsyncFunction('param', userScript)`（AsyncFunction = `async function(){}.constructor`）
+  - `setTimeout(userScript, delay)` 当参数为字符串
+  - `setInterval(userScript, delay)` 当参数为字符串
+  - `vm.runInNewContext` / `vm.runInThisContext`（即便使用沙箱仍可能逃逸）
+- 子进程（Nexus FaaS **允许**访问 `child_process` 与执行 shell，因此命令注入风险真实存在）：
+  - `child_process.exec(command)` 中 command 包含用户输入
+  - `child_process.spawn(cmd, args)` / `execFile(cmd, args)` 中 cmd/args 来自用户输入
+  - 通过 `child_process` 调用 `sh`、`bash`、`curl`、`wget` 等系统工具
+- Nexus FaaS 仅允许写入 `/tmp`，但应用仍可通过 `child_process` 执行系统命令，命令注入可导致任意命令执行、数据外泄、通过 warm start 污染跨调用全局状态。
+
+脆弱模式
+
+```typescript
+// 严重 - 用户脚本在同一全局作用域执行
+const AsyncFunction = async function () {}.constructor as typeof Function;
+
+export async function runUserScript(userScript: string, issue: unknown) {
+  const f = new AsyncFunction('issue', 'api', userScript);
+  return await f(issue, api); // 用户代码可访问/修改全局
+}
+
+// 严重 - 直接 eval
+resolver.define<{ expression: string }, unknown>(
+  'evaluate',
+  async (_context, payload) => eval(payload.expression),
+);
+
+// 严重 - Function 构造器
+const calculate = new Function('x', 'y', payload.formula);
+calculate(10, 20);
+
+// 高危 - setTimeout 字符串参数
+setTimeout(payload.callback, 1000); // 若 callback 是字符串
+```
+
+FaaS Warm Start 风险
+
+Nexus 后端实例可能在多次调用间复用：
+
+```typescript
+// 模块级变量在调用间持久化
+let globalCache: Record<string, unknown> = {};
+
+// 恶意用户脚本可以：
+// 1. 污染全局作用域
+(globalThis as any).__proto__.malicious = () => { /* exploit */ };
+
+// 2. 修改模块级状态
+globalCache.otherTenantData = stolenData;
+
+// 3. 覆盖内置函数（抑制日志、篡改 fetch）
+console.error = () => {};
+
+// 4. 访问前一次调用遗留的数据
+const previous = globalCache.sensitiveData;
+```
+
+安全模式
+
+```typescript
+// 更优 - 配置驱动而非代码执行
+// 用声明式规则/DSL 代替用户脚本，并严格校验 schema
+import { z } from 'zod';
+const RuleSchema = z.object({
+  field: z.enum(['status', 'priority', 'assignee']),
+  op: z.enum(['eq', 'ne', 'gt', 'lt']),
+  value: z.union([z.string(), z.number()]),
+}).strict();
+
+// 若必须执行用户表达式，使用 QuickJS 等真正的进程内隔离
+// Nexus FaaS 可运行 quickjs-emscripten 等纯 WebAssembly/JS 实现的沙箱模块；
+// 但应避免使用依赖原生二进制（.node）的 isolated-vm 等模块。
+import { getQuickJS } from 'quickjs-emscripten';
+
+async function runExpression(expr: string, context: Record<string, unknown>) {
+  const QuickJS = await getQuickJS();
+  const vm = QuickJS.newContext();
+  try {
+    // 仅暴露白名单函数与数据
+    for (const [k, v] of Object.entries(context)) vm.setProp(vm.global, k, vm.newString(String(v)));
+    const result = vm.evalCode(expr);
+    // ...读取结果
+  } finally {
+    vm.dispose();
+  }
+}
+```
+
+检测清单
+
+- [ ] 搜索代码库中的 `AsyncFunction`、`new Function(`、`eval(`、`setTimeout("`、`setInterval("`。
+- [ ] 追踪 script/code 参数是否来自不可信来源（payload、Webhook body、CES 记录、远程配置）。
+- [ ] 识别可能在调用间泄漏的模块级变量。
+- [ ] 检查用户可执行代码中是否修改全局作用域。
+- [ ] 审查持久化在 warm start 上的缓存与状态。
+- [ ] 检查是否调用 `child_process.exec/spawn` 并拼接用户输入。
+
+扫描模式
+
+```yaml
+rules:
+  - id: nexus-async-function
+    pattern: |
+      new (async function(){}).constructor(...)
+    message: "AsyncFunction 构造器 —— 禁止执行不可信代码"
+    severity: ERROR
+    languages: [javascript, typescript]
+  - id: nexus-new-function
+    pattern: new Function(...)
+    message: "new Function —— 禁止执行不可信代码"
+    severity: ERROR
+  - id: nexus-eval
+    pattern: eval(...)
+    message: "eval —— RCE 风险"
+    severity: ERROR
+  - id: nexus-global-assign
+    pattern: globalThis.$PROP = ...
+    message: "修改 globalThis —— warm start 跨调用风险"
+    severity: WARNING
+```
+
+PoC / 测试线索
+
+- 提交修改 `globalThis.__proto__` 的脚本。
+- 在全局变量中存入数据，验证是否在下一次调用仍可访问。
+- 覆盖 `console.log` 验证是否影响后续请求。
+- 尝试访问 `process.env`（若存在）提取环境变量与密钥。
+- 尝试 `require()` 加载敏感模块（若运行时支持）。
+- 通过 `child_process.exec('id')` 或 `spawn('sh', ['-c', 'id'])` 验证命令执行（FaaS 允许访问 child_process）。
+
+修复建议（咨询）
+
+- 尽量避免执行用户提供的代码，改用配置化/声明式方案（schema 校验、规则引擎）。
+- 若必须执行：使用 QuickJS、Deno subprocess、WebAssembly 沙箱等真正隔离的方案；不要仅依赖 Node `vm` 模块。
+- 不要对不可信输入使用 `eval`、`Function`、`AsyncFunction`。
+- 在每次调用开始时重置全局状态；不要在模块级缓存中保留租户/用户相关数据。
+- 清除或在调用之间重置缓存。
+- 实施严格超时与资源限制。
+- 审计暴露给用户脚本的 API 表面。
+
+报告指南
+
+- 记录代码执行机制及用户输入入口。
+- 解释 warm start 对租户隔离的影响。
+- 提供全局状态污染或跨租户泄漏的 PoC。
+- 映射到 CWE-94、CWE-95、CWE-1189。

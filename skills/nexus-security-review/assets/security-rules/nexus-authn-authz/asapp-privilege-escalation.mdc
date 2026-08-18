@@ -1,0 +1,167 @@
+---
+description: 检测通过 api.invoke 的 as:"app" 调用缺少授权校验导致的权限提升风险
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 后端调用 PingCode REST API 有两种身份：
+  - `api.invoke(path, { as: "user", userId })`：以指定用户身份调用，自动受该用户在 PingCode 的权限约束。
+  - `api.invoke(path, { as: "app" })`：以应用身份调用，受 manifest 中声明的 scopes 约束，通常**权限高于普通用户**。若未在调用前校验请求用户是否有权对目标资源执行该操作，即构成权限提升/IDOR。
+- 对用户触发的操作（来自 Resolver、自定义 API），默认应优先使用 `as: "user"`；若必须使用 `as: "app"`，必须在调用 `api.invoke(..., { as: "app" })` 前对**同一目标资源**执行显式权限校验。
+- 相关 CWE：CWE-269（权限管理不当）、CWE-862（缺失授权）、CWE-639（IDOR）。
+
+范围与信号
+
+- 来源：Resolver payload、Webhook 请求体、事件载荷、exposer 自定义 API 请求。
+- 汇聚点：`api.invoke(path, { as: "app" })`（写/删/状态变更尤其敏感）、KVS/CES/NOS 变更、远程调用、任何状态变更操作。
+- 红旗：
+  - 收到 payload 后立即使用 `as: "app"` 调用，没有权限校验。
+  - 授权检查缺失、过于宽泛，或未与 sink 使用的**同一资源 ID**绑定。
+  - 使用 `as: "app"` 执行请求用户本无法直接执行的操作，且未校验用户权限。
+  - 未验证用户是否拥有或可访问目标资源（项目/工作项/页面/空间/用例/产品等）。
+
+脆弱模式
+
+```typescript
+// 脆弱 - 用户控制的目标直接进入 as:"app" sink，无授权校验
+resolver.define<{ workitemId: string; fields: Record<string, unknown> }, void>(
+  'updateWorkitem',
+  async (context, payload) => {
+    await api.invoke(`/v1/workitems/${payload.workitemId}`, {
+      method: 'PUT',
+      as: 'app',
+      body: JSON.stringify(payload.fields),
+    });
+  },
+);
+
+// 脆弱 - 校验的资源与 sink 修改的资源不是同一个
+resolver.define<{ sourceId: string; targetId: string; transitionId: string }, void>(
+  'transitionWorkitem',
+  async (context, payload) => {
+    // 只校验了 payload.sourceId ...
+    const perms = await authorize.getUserPermissions('workitem', payload.sourceId, context.user!.id);
+    if (!perms.some(p => p.key === 'pca:pjm:requirement:edit')) {
+      throw new Error('Forbidden');
+    }
+
+    // ... 却用 as:"app" 修改 payload.targetId（攻击者可控）
+    await api.invoke(`/v1/workitems/${payload.targetId}/transitions`, {
+      method: 'POST',
+      as: 'app',
+      body: JSON.stringify({ transition_id: payload.transitionId }),
+    });
+  },
+);
+```
+
+安全模式
+
+```typescript
+import { Resolver } from '@pc-nexus/core';
+import { api, authorize } from '@pc-nexus/core';
+
+const resolver = new Resolver();
+
+// 安全 - 操作应尊重调用者权限时使用 as:"user"
+resolver.define<{ workitemId: string; fields: Record<string, unknown> }, void>(
+  'updateWorkitemAsUser',
+  async (context, payload) => {
+    await api.invoke(`/v1/workitems/${payload.workitemId}`, {
+      method: 'PUT',
+      as: 'user',
+      userId: context.user!.id,
+      body: JSON.stringify(payload.fields),
+    });
+  },
+);
+
+// 安全 - as:"app" 之前对同一资源执行显式权限校验
+resolver.define<{ workitemId: string; fields: Record<string, unknown> }, void>(
+  'updateWorkitemAsApp',
+  async (context, payload) => {
+    const perms = await authorize.getUserPermissions(
+      'workitem',
+      payload.workitemId,
+      context.user!.id,
+    );
+    const canEdit = perms.some(
+      p => p.key === 'pca:pjm:requirement:edit' || p.key === 'pca:pjm:task:edit'
+        || p.key === 'pca:pjm:bug:edit' || p.key === 'pca:pjm:issue:edit',
+    );
+    if (!canEdit) {
+      throw new Error('Forbidden');
+    }
+
+    await api.invoke(`/v1/workitems/${payload.workitemId}`, {
+      method: 'PUT',
+      as: 'app',
+      body: JSON.stringify(payload.fields),
+    });
+  },
+);
+
+// 安全 - 通过先以 as:"user" 试探性 GET 资源，由 PingCode API 强制权限
+// 注意：仅当 GET 该资源需要与目标写操作同等权限时才可靠；否则应使用 authorize.getUserPermissions
+resolver.define<{ pageId: string; content: unknown }, void>(
+  'updateWikiPage',
+  async (context, payload) => {
+    // 先以用户身份访问一次资源，若无权限 PingCode 会返回 403/404
+    const probe = await api.invoke(`/v1/wiki/pages/${payload.pageId}`, {
+      as: 'user',
+      userId: context.user!.id,
+    });
+    if (!probe.ok) {
+      throw new Error('Forbidden');
+    }
+
+    await api.invoke(`/v1/wiki/pages/${payload.pageId}`, {
+      method: 'PUT',
+      as: 'app',
+      body: JSON.stringify(payload.content),
+    });
+  },
+);
+```
+
+检测清单
+
+- [ ] 识别所有 Resolver、事件处理器、exposer handler、remote endpoint 中 `api.invoke(..., { as: "app" })` 的使用位置。
+- [ ] 对用户触发流程中的每个 `as: "app"` 调用，确认在 sink 之前存在显式权限检查。
+- [ ] 确认授权检查与 `as: "app"` 操作所使用的**同一资源 ID**绑定。
+- [ ] 对象级权限必需时，拒绝使用宽泛检查（例如只判断「是否登录」「是否团队成员」）。
+- [ ] 当操作应尊重用户权限时，确认使用了 `as: "user"` 而非 `as: "app"`。
+- [ ] 审查事件处理器（无 `context.user`）：系统事件以 SYSTEM 身份触发，使用 `as: "app"` 前应评估事件来源是否可信（例如 `filter.ignoreSelf`、changelog.origin），并避免在可被普通用户影响的事件中执行高权限写操作。
+
+原型污染导致的身份提升
+
+与其他 JS 运行时类似，如果应用把不可信对象（如 payload、事件 body、Webhook JSON）深度合并到运行时对象中，可能污染 `Object.prototype`，进而影响后续 `api.invoke` 的 options 构造。必须：
+
+- 在入口处使用 schema 校验（zod、joi 等）并启用 strict/拒绝未知键。
+- 避免不安全的递归合并；对 `__proto__`、`constructor`、`prototype` 键进行拒绝。
+
+参见 `@nexus-injection/prototype-pollution.mdc`。
+
+PoC / 测试线索
+
+- 以低权限用户调用 Resolver，传入任意资源 ID（workitemId、pageId、testcaseId、projectId、spaceId）。
+- 验证对用户无权访问的资源执行操作会失败。
+- 使用 `as: "app"` 的 Resolver 测试跨项目、跨产品、跨空间访问。
+- 测试同一函数中校验资源 A 但修改资源 B 的情况（类似上面第二个脆弱示例）。
+
+修复建议（咨询）
+
+- 除非明确需要应用级权限，否则默认使用 `as: "user"` 并传入 `context.user.id`。
+- 将用户触发的 `as: "app"` 变更视为高风险，必须有显式权限检查。
+- 在任何 `as: "app"` 操作前，使用 `authorize.getUserPermissions(type, id, userId)` 校验用户对目标资源的权限。
+- 将校验绑定到 sink 使用的确切目标资源 ID；记录每个使用 `as: "app"` 的原因。
+- 事件处理器中默认不信任载荷，使用 `filter.ignoreSelf` 与 changelog 校验，避免将普通用户可触发的事件升级为特权操作。
+
+报告指南
+
+- 引用具体 Resolver/函数及 `as: "app"` 调用位置。
+- 说明缺失的授权检查与潜在影响（IDOR、权限提升）。
+- 给出篡改资源 ID 的测试案例。
+- 映射到 CWE-269、CWE-862、CWE-639。

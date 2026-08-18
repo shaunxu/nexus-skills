@@ -1,0 +1,47 @@
+---
+description: Nexus 租户隔离规则索引。对 nexus-tenant-isolation/** 自动挂载
+globs:
+  - nexus-tenant-isolation/**
+alwaysApply: false
+---
+
+- 范围：多租户/多企业数据隔离、FaaS warm start 风险、全局状态、跨租户数据泄漏。
+- 优先级：在共享基础设施上服务多企业的应用属严重风险类别。
+
+Nexus 租户隔离关键风险
+
+- FaaS warm start：Nexus 后端运行在 serverless FaaS，运行时实例可能被复用；模块级变量/全局状态会在不同调用（可能来自不同企业/用户）之间持久化。
+- 模块级状态污染：缓存、特性开关、配置、临时令牌存储在模块作用域，会在调用之间泄漏。
+- 存储键冲突：KVS key、CES 查询条件、NOS key 未按企业/用户上下文作用域化，导致跨租户访问。
+- 跨企业 API 调用：`as: "app"` 操作缺少企业/资源级校验时，可能访问其他企业数据。
+- 自定义 API（exposer）与 Webhook：公网入口必须显式从可信上下文（NIT、签名、scope）派生租户标识，不得信任 payload 中的 teamId/installationId。
+- 异步队列：消费者任务在后台运行，`context.user` 可能不存在；任务必须自带最小必要的授权信息，并在执行时重新校验。
+
+子规则
+
+- 全局状态与 Warm Start → `@nexus-tenant-isolation/global-state-warmstart.mdc`
+<!-- - 缓存隔离 → `@nexus-tenant-isolation/cache-isolation.mdc`
+- 存储键作用域 → `@nexus-tenant-isolation/storage-key-scoping.mdc`
+- 跨租户 API 风险 → `@nexus-tenant-isolation/cross-tenant-api.mdc` -->
+
+检测启发式
+
+- 识别处理器函数之外的模块级变量（`const cache = {}`、`let state = ...`、`let currentUser`）。
+- 搜索未在 key 中包含 `team.id` / `installation.id` / `user.id` 等上下文的缓存。
+- 审查 KVS/CES/NOS 操作是否使用了含租户作用域的 key 前缀或 CES 条件。
+- 检查是否存在可被不可信输入影响的全局变量修改。
+- 检查事件处理器/队列消费者是否在缺少用户上下文时执行高权限操作。
+
+Nexus 特定事实
+
+- 每个应用在被企业安装后才分配存储；存储按企业（team/installation）隔离。
+- 应用上下文 `NexusAppContext` 提供：`team.id`、`installation.id`、`app.id`、`environment.id`、`invocation.id`、`user?.id`、`extension?.data`、`event?.trigger`。这些字段由平台填充，是租户隔离的可信依据。
+- 运行时是隔离的 FaaS，但**容器/实例可能被复用**；这要求应用自身避免在全局/模块级保存与单次调用相关的数据。
+- 卸载后软删除 30 天，之后永久删除；重新安装在 30 天内会重新关联数据。
+
+CWE 参考
+
+- CWE-668：将资源暴露到错误的控制域
+- CWE-200：信息暴露
+- CWE-212：存储或传输前敏感信息移除不当
+- CWE-1189：共享资源隔离不当

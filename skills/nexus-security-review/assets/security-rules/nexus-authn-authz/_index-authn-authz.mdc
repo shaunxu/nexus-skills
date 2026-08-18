@@ -1,0 +1,48 @@
+---
+description: Nexus 认证与授权规则索引。对 nexus-authn-authz/** 自动挂载
+globs:
+  - nexus-authn-authz/**
+alwaysApply: false
+---
+
+- 范围：Nexus 应用中的认证机制、授权检查、权限边界与访问控制。
+- 优先级：失效的认证与授权是最常见、影响最大的漏洞类别之一。
+
+Nexus AuthN/AuthZ 关键风险
+
+- `api.invoke(path, { as: "app" })` 与 `as: "user"` 的权限差异：`as: "app"` 以应用身份执行（受 manifest scopes 限制），通常权限高于当前用户；在 `as: "app"` 调用之前缺失权限校验会导致越权。
+- `display` 条件不是授权：display 仅在前端控制 UI 可见性，可被 DevTools 篡改；攻击者可直接通过 Bridge `invoke()` 调用 Resolver。
+- Webhook 触发器无平台内置认证：Nexus 不校验签名，必须应用自行实现。
+- Resolver 端授权缺失：浏览器/Bridge 提供的上下文不可信；所有敏感操作必须在服务端校验。
+- 事件处理器以 SYSTEM 身份运行：系统事件/定时事件中 `context.user` 为 undefined，必须自行做资源级授权。
+- 自定义 REST API（exposer）通过 `ncp:` scope 控制调用方，但处理函数仍需对象级授权。
+- Remote 透传 userToken/appToken：必须正确申请 `pcp:read:user:token` / `pcp:read:app:token`，且远端必须验证 NIT JWT。
+
+子规则
+
+- `as:"app"` 权限提升 → `@nexus-authn-authz/asapp-privilege-escalation.mdc`
+- 优先使用函数 context 对象 → `@nexus-authn-authz/prefer-context-authz.mdc`
+- Resolver 缺失授权 → `@nexus-authn-authz/missing-resolver-authz.mdc`
+- display 条件绕过 → `@nexus-authn-authz/display-conditions-bypass.mdc`
+
+检测启发式
+
+- 搜索 `api.invoke(..., { as: "app" })` 调用前是否有权限/角色检查。
+- 识别仅根据 payload 中的 ID 访问/修改数据而未做所有权校验的 Resolver。
+- 查找 manifest 中带 `display` 条件但对应 Resolver 缺少服务端授权的扩展。
+- 查找 Webhook 处理器无认证头或签名校验。
+- 检查事件处理器（SystemEventHandler、ScheduledEventHandler）是否使用 `as: "app"` 但未做资源鉴权。
+
+动态测试手段
+
+- 直接通过 Bridge `invoke(functionKey, payload)` 绕过 UI 调用 Resolver。
+- 多账号测试权限边界（普通成员 vs 项目管理员 vs 系统管理员）。
+- 篡改 `extension.data`（前端 Bridge 上下文中可见）以访问其他项目/工作项/页面/用例。
+
+CWE 参考
+
+- CWE-862：缺失授权
+- CWE-863：授权不正确
+- CWE-284：访问控制不当
+- CWE-306：关键功能缺失认证
+- CWE-639：通过用户控制键绕过授权（IDOR）

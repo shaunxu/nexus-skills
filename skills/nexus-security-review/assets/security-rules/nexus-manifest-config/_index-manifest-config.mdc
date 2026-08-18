@@ -1,0 +1,54 @@
+---
+description: Nexus manifest 与平台配置规则索引。对 nexus-manifest-config/** 自动挂载
+globs:
+  - nexus-manifest-config/**
+alwaysApply: false
+---
+
+- 范围：`manifest.yaml` 配置、权限 scopes、CSP 设置、remotes/endpoints、exposer、event、storage、environment.variables、扩展点声明。
+- 优先级：Manifest 配置错误是影响所有应用运行的基础性安全问题。
+
+Nexus Manifest/配置关键风险
+
+- 过宽的权限 scopes：申请超过实际所需的 scopes 违反最小权限原则。
+- 不安全的 CSP 指令：`permissions.content.scripts` 中启用 `unsafe-inline`、`unsafe-eval`、`blob:`、`data:`、`*`、`https:`。
+- 过宽出站域名：`permissions.external.fetch.backend/client` 使用通配符或未使用的域名。
+- remote 配置：`auth.userToken`/`appToken` 开启但未申请对应 scope；baseUrl 使用 HTTP 或过宽路径；远端未验证 NIT。
+- exposer 自定义 REST API：自定义 `ncp:` scope 命名、scope 粒度过粗、处理函数缺少对象级授权。
+- 事件触发器：Webhook 无内置认证、system 事件以 SYSTEM 身份运行可能缺少资源级权限、scheduled 事件无用户上下文。
+- storage.entities：定义了过多实体/属性/索引或敏感字段未加密。
+- environment.variables 被误用于密钥（应使用 KVS `secret: true`）。
+
+子规则
+
+- 权限 Scopes 审查 → `@nexus-manifest-config/permission-scopes.mdc`
+- 出站 URL 条目反模式 → `@nexus-manifest-config/egress-url-entries.mdc`
+- 内容安全策略（CSP）→ `@nexus-manifest-config/content-security-policy.mdc`
+
+检测启发式
+
+- 解析 `manifest.yaml`，列出所有声明的 scopes，与代码中实际 `api.invoke` 调用做比对。
+- 检查 `permissions.content.scripts` 中是否包含 `unsafe-inline`、`unsafe-eval`、`blob:`、`data:`、`*`。
+- 检查 `permissions.external.fetch.*` 是否使用显式域名、是否存在未使用的域名或通配符。
+- 检查 `remotes[].auth` 与 `permissions.scopes` 的对应关系。
+- 检查 `exposer.scopes` 是否以 `ncp:` 开头、是否符合动词+名词命名、是否控制在 16 scopes / 32 routes 内。
+- 检查 `event.triggers` 中 webhook 是否有签名校验实现、scheduled handler 是否幂等。
+
+Manifest 审查清单
+
+- [ ] 所有 scopes 均有代码中实际 API 调用作为依据
+- [ ] CSP 中无 `unsafe-inline`/`unsafe-eval`（除非已记录 XSS 缓解措施）
+- [ ] 外部权限使用显式域名（无通配符）
+- [ ] Webhook 触发器已在代码中实现签名校验
+- [ ] remote 配置了最小的 auth（能不开 token 就不开）
+- [ ] `environment.variables` 未用于存放机密
+- [ ] 扩展点的 `display` 条件不被当作安全边界
+- [ ] exposer 自定义 scope 与路由粒度合理
+- [ ] `storage.entities` 的实体/属性/索引数量在平台限制内
+
+CWE 参考
+
+- CWE-16：配置错误
+- CWE-732：权限分配不正确
+- CWE-269：权限管理不当
+- CWE-1188：资源不安全默认初始化

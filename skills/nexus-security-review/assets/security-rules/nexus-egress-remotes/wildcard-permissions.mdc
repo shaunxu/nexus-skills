@@ -1,0 +1,206 @@
+---
+description: 检测 Nexus 外部权限与 remotes 中不安全的通配符模式
+globs:
+alwaysApply: false
+---
+
+背景
+
+- Nexus 通过 manifest 的 `permissions.external.fetch.backend/client` 限制出站域名；在 `remotes` 中声明远端服务。通配符或过宽模式会导致 SSRF、数据外泄、非预期外联。
+- 平台要求显式域名 allowlist。
+- 相关 CWE：CWE-942（跨域策略过于宽松）、CWE-918（SSRF）。
+
+Nexus 域名格式参考
+
+根据 Nexus 文档，`permissions.external.fetch.backend/client` 允许的条目形式：
+
+- `https://api.example.com` —— 精确域名（含协议）
+- `api.example.com` —— 精确域名（不含协议）
+- `*.example.com` —— 子域通配（谨慎使用）
+- `*` —— 允许任意域名（不应使用）
+- 可引用 remote：`remote:<remote-key>`
+- 单个 URL 长度 ≤ 1024 字符
+- 后端匹配时仅按**域名**匹配，协议、路径、端口被忽略；前端按完整 URI 匹配
+
+`remotes[].baseUrl` 规则：
+- 必须是 `http://` 或 `https://` 开头的绝对 URL
+- 正则：`/^https?:\/\/[^\/\s]+(?:\/[^\s]*)?$/i`
+- 长度 ≤ 2048 字符
+
+范围与信号
+
+- Manifest 位置：
+  - `permissions.external.fetch.backend[]`
+  - `permissions.external.fetch.client[]`
+  - `permissions.content.scripts/styles/fonts/frames/images/media[]`
+  - `remotes[]`、`endpoints[]`
+- 危险模式：
+  - `*` —— 允许任意域名（不可接受）
+  - `*.example.com` —— 子域通配（攻击者可能注册子域或利用用户可控子域）
+  - `*.*.example.com` —— 多层通配
+  - 过宽 TLD：`*.com`、`*.io`、`*.cn`、`*.net`
+  - 过宽云厂商域：`*.amazonaws.com`、`*.aliyuncs.com`、`*.myqcloud.com`、`*.huaweicloud.com`
+  - 开发/内网模式：`localhost`、`*.dev.example.com`、`127.0.0.1`、`169.254.169.254`、`10.*`、`172.16-31.*`、`192.168.*`
+
+脆弱模式
+
+```yaml
+# 严重 - 允许任意外部域名
+permissions:
+  external:
+    fetch:
+      backend:
+        - '*'
+
+# 高危 - 子域通配可被利用
+permissions:
+  external:
+    fetch:
+      backend:
+        - '*.example.com'
+# 攻击者可注册：malicious.example.com（若可能）
+# 或利用：user-controlled.example.com
+
+# 高危 - 多层通配
+permissions:
+  external:
+    fetch:
+      backend:
+        - '*.*.example.com'
+
+# 中危 - 过宽云服务
+permissions:
+  external:
+    fetch:
+      backend:
+        - '*.amazonaws.com'  # 涵盖 S3、EC2 元数据、其他客户资源等
+        - '*.aliyuncs.com'
+        - '*.blob.core.windows.net'
+
+# 风险 - 生产 manifest 中包含开发/内网模式
+permissions:
+  external:
+    fetch:
+      backend:
+        - '*.dev.example.com'
+        - 'localhost:3000'
+        - '127.0.0.1:8080'
+```
+
+安全模式
+
+```yaml
+# 安全 - 显式域名 allowlist
+permissions:
+  external:
+    fetch:
+      backend:
+        - 'api.example.com'
+        - 'auth.example.com'
+        - 'webhooks.example.com'
+
+# 安全 - 明确指定子域
+permissions:
+  external:
+    fetch:
+      backend:
+        - 'api.prod.example.com'
+        - 'api.eu.example.com'
+
+# 安全 - 仅 HTTPS
+permissions:
+  external:
+    fetch:
+      backend:
+        - 'https://api.example.com'
+
+# 安全 - 远程服务使用 remotes 而不是 fetch 通配
+remotes:
+  - key: partner-service
+    baseUrl: https://partner.example.com/api
+    auth:
+      userToken: false
+      appToken: false
+```
+
+检测清单
+
+- [ ] 解析 `manifest.yaml` 中 `permissions.external.fetch.backend/client`。
+- [ ] 标记任何裸 `*` 条目。
+- [ ] 标记 `*.domain.com` 模式并评估子域控制风险。
+- [ ] 检查过宽云厂商通配。
+- [ ] 验证所有声明域名确为应用功能所需。
+- [ ] 检查是否包含 localhost / 内网 IP / 链路本地地址（`169.254.169.254`）。
+- [ ] 审查 `remotes` 中 baseUrl 是否过宽或使用 HTTP（明文）。
+- [ ] 检查 `permissions.content.*` 是否使用 `*`、`https:`、`data:` 等过宽来源。
+
+风险评估
+
+| 模式 | 风险等级 | 关注点 |
+|------|----------|--------|
+| `*` | 严重 | 无限制出站 |
+| `*.example.com` | 高 | 子域接管/注册 |
+| `*.amazonaws.com` / `*.aliyuncs.com` | 高 | 云元数据、内网服务、其他租户资源 |
+| `*.cloudfront.net` / `*.cdn.example` | 中 | 可能含不可信用户内容 |
+| `localhost` / 内网 IP | 中 | 生产环境暴露调试入口 |
+| `api.example.com` | 低 | 显式、受控 |
+
+子域接管考虑
+
+```yaml
+# 使用通配时须评估：
+# 1. 是否任何人都可在该域注册子域？
+# 2. 是否存在悬空 DNS 记录？
+# 3. 是否存在用户可控的子域模式？
+#
+# 典型脆弱场景：
+permissions:
+  external:
+    fetch:
+      backend:
+        - '*.github.io'      # 任何人可创建 [username].github.io
+        - '*.oss-cn-*.aliyuncs.com'  # 公共对象存储
+        - '*.vercel.app'      # 任意用户可部署
+```
+
+Remote 配置审查
+
+```yaml
+remotes:
+  - key: internal-api
+    baseUrl: https://api.example.com/v1  # 推荐 HTTPS + 精确路径前缀
+    auth:
+      userToken: false  # 仅在必要时开启
+      appToken: false
+```
+
+审查 `auth` 配置：
+- `userToken: true` 需要 `pcp:read:user:token` scope；远端将获得当前用户的 PingCode 访问令牌，必须严格保护并验证 NIT。
+- `appToken: true` 需要 `pcp:read:app:token` scope；远端将获得应用级令牌，权限更高。
+- 同时开启两者意味着远端同时持有用户与应用凭据，应评估最小化必要性。
+- 远端必须验证 NIT JWT，不得仅依赖网络边界。
+
+PoC / 测试线索
+
+- 尝试在通配范围内请求非预期域名（包括云元数据端点 `http://169.254.169.254/`）。
+- 使用攻击者可控子域测试子域通配。
+- 验证已声明但未使用的域名是否可移除。
+- 若存在云通配，测试 SSRF 访问云元数据。
+- 若 remote 同时开启 userToken/appToken，检查远端是否验证 NIT、是否记录令牌、是否最小化使用。
+
+修复建议（咨询）
+
+- 用显式域名列表替换通配符。
+- 审计所有外部域名的必要性。
+- 若必须使用子域通配，确保域名注册商控制所有子域，且不接受用户注册。
+- 从生产 manifest 中移除开发/localhost/内网模式。
+- 除 manifest 控制外，在请求时进行 URL 校验。
+- 远端服务必须验证 NIT JWT（RS256、`iss=nexus/invocation-token`、`aud=nexus`、5 分钟过期、`kid=nexus-nit-1`、缓存 JWKS）。
+
+报告指南
+
+- 列出所有通配符模式及其 manifest 位置。
+- 评估每个通配的可利用性。
+- 注明哪些域名可能被攻击者控制。
+- 提供具体的域名收敛替代方案。
+- 映射到 CWE-942、CWE-918。
