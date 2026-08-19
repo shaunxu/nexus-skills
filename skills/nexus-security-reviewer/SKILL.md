@@ -1,5 +1,5 @@
 ---
-name: nexus-security-review
+name: nexus-security-reviewer
 description: >
   对 PingCode Nexus 应用执行结构化、Nexus 专属的白盒安全审查，产出证据驱动的安全审计报告。
   当用户要求对 Nexus 应用进行安全审查、安全审计、漏洞评估、渗透式代码审查、授权（AuthZ）审查、

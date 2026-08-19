@@ -347,7 +347,7 @@ def summarize(manifest_path: Path) -> dict[str, Any]:
 
     for entry in backend_classified:
         if entry["classification"] == "wildcard-all":
-            add_obs("EGRESS_BACKEND_WILDCARD_ALL", "high", "permissions.external.fetch.backend contains '*', allowing outbound calls to any host from backend functions.")
+            add_obs("EGRESS_BACKEND_WILDCARD_ALL", "critical", "permissions.external.fetch.backend contains '*', allowing outbound calls to any host from backend functions.")
         elif entry["classification"] == "wildcard-subdomain":
             add_obs("EGRESS_BACKEND_WILDCARD_SUBDOMAIN", "medium", f"Backend egress '{entry['value']}' uses a wildcard subdomain. Verify all subdomains are trusted.")
 
@@ -358,9 +358,9 @@ def summarize(manifest_path: Path) -> dict[str, Any]:
     for key in ("scripts", "styles"):
         for value in csp.get(key, []):
             if value == "unsafe-eval":
-                add_obs("CSP_UNSAFE_EVAL", "critical", "permissions.content.scripts contains 'unsafe-eval', enabling dynamic code execution in Custom UI.")
+                add_obs("CSP_UNSAFE_EVAL", "high", "permissions.content.scripts contains 'unsafe-eval', enabling eval()/new Function() code execution in Custom UI.")
             elif value == "unsafe-inline":
-                add_obs("CSP_UNSAFE_INLINE", "medium", f"permissions.content.{key} contains 'unsafe-inline'. Review whether XSS sinks (dangerouslySetInnerHTML, innerHTML) are reachable.")
+                add_obs("CSP_UNSAFE_INLINE", "high", f"permissions.content.{key} contains 'unsafe-inline', amplifying XSS. Review whether XSS sinks (dangerouslySetInnerHTML, innerHTML) are reachable.")
             elif value == "unsafe-hashes":
                 add_obs("CSP_UNSAFE_HASHES", "low", f"permissions.content.{key} contains 'unsafe-hashes'; verify inline event handlers are necessary and safe.")
 
@@ -400,7 +400,7 @@ def summarize(manifest_path: Path) -> dict[str, Any]:
 
     for var in env_vars:
         if var["default_looks_secret"]:
-            add_obs("ENV_DEFAULT_LOOKS_SECRET", "high", f"environment.variables '{var['key']}' has a default value that looks like a secret. Secrets must come from KVS secret storage, not manifest defaults.", evidence=var["default_preview"])
+            add_obs("ENV_DEFAULT_LOOKS_SECRET", "critical", f"environment.variables '{var['key']}' has a default value that looks like a hardcoded secret. Secrets must come from KVS secret storage, not manifest defaults; if this is a real credential, rotate it immediately.", evidence=var["default_preview"])
 
     for fn in unresolved_handlers:
         refs = handler_refs.get(fn, [])
