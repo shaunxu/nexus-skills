@@ -118,7 +118,7 @@ Nexus 目前没有成本优化相关的 skill，平台也没有公开的计费�
 
 ### 运维与部署就绪
 
-- `manifest.yaml` 中 `app.id`、`app.version`、`app.name` 等必需字段齐全（`app.id` 由 `nexus create` 生成，不应手动修改）。
+- `manifest.yaml` 中 `app.id`、`app.version` 必需字段齐全（`app.id` 由 `nexus create` 生成，不应手动修改；应用名在开发者中心设置，不在 manifest 中声明，不要将 `app.name` 缺失误报为问题）。
 - 根目录与 `web/main/` 的 `package.json` 中 scripts 健全（典型为 `build`、`build-web`、`lint` 等）。
 - `.gitignore` 覆盖 `node_modules/`、`web/main/dist/`、`__pycache__/`、`.DS_Store` 等本地产物。
 - 依赖未锁定到已知有漏洞或过旧的版本（仅做明显信号标记，不运行 `npm audit`——那属于安全审查范围）。
