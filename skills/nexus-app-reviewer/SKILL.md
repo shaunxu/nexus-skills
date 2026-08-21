@@ -59,7 +59,7 @@ Nexus 目前没有成本优化相关的 skill，平台也没有公开的计费�
    - 检查 `@pc-nexus/*` 包是否匹配、scripts、运行时假设（Node.js >= 24）、直接依赖、明显未使用/缺失的包。
 3. 检查源文件。
    - 后端/Resolver：`resolver.define`、handler 具名导出、`api.invoke` 调用（注意 `as: "app"` vs `as: "user"`）、存储使用（KVS/CES/NOS）、`fetch.request` 外部调用、`remote.invoke`、日志、错误处理、异步队列。
-   - 前端（Custom UI）：`web/main/` 入口、`@pc-nexus/bridge` 的 `invoke()`/`api.invoke()`/`remote.invoke()` 模式、loading/error 状态、构建产物 `web/main/dist`。
+   - 前端（Custom UI）：`web/main/` 入口、`@pc-nexus/bridge` 的 `invoke()`/`api.invoke()`/`remote.invoke()` 模式、loading/error 状态、`web/main/package.json` 中的构建脚本（`build`/`build-web`）。不要把 `web/main/dist` 是否存在作为检查项——它是被 `.gitignore` 的本地产物，干净 checkout 中缺失是正常的。
 4. 检查测试与项目文档（如存在）。
    - 仅当行为风险足以支撑时才记录缺失测试。
 5. 运行 `nexus lint`（可在非交互环境安全运行），收集 manifest 与代码的机械性问题作为证据。
@@ -72,11 +72,11 @@ Nexus 目前没有成本优化相关的 skill，平台也没有公开的计费�
 - Manifest 引用了缺失的 handler 文件/具名导出、resource path 或 function key。
 - 前端 `invoke('name')` 调用的名称与后端 `resolver.define('name')` 注册的名称不匹配（逐字区分大小写）。
 - `extensions[].resolver.function` 不等于任何 `functions[].key`。
-- `extensions[].resource` 不等于任何 `resources[].key`，或 `resources[].path` 未指向 `web/main/dist`。
+- `extensions[].resource` 不等于任何 `resources[].key`。
 - 实际 API/外部 fetch 使用所需的 scopes 或 `permissions.external.fetch.backend`/`client` 条目缺失。
 - `functions[].handler` 格式不符合 `<file>.<export>` 正则约束，或指向不存在的文件/导出。
 - 运行时（Node.js < 24）、包版本或模块语法可能导致 `nexus lint`、构建、部署或安装失败。
-- 前端改动后未构建（`web/main/dist` 缺失或过期），因为 `nexus deploy` 不会自动构建前端。
+- `resources[].path` 未指向 `web/main/dist`，或 `web/main/package.json` 缺少构建脚本（`build-web` 或 `build`）。注意：`web/main/dist` 在干净 checkout 中缺失是正常的（该目录被 `.gitignore`），不要把 dist 缺失本身当作问题；部署时 `nexus-app-builder` 的部署脚本会自动执行 `npm install` 与 `npm run build-web`。仅当 dist 已存在但明显早于 `web/main/src` 源码改动时，才作为提示性信息记录。
 - 应用没有明确的方式触达其主用户流程（例如扩展点 target 错误或 display 条件恒为 false）。
 - `manifest.yaml` 中 `app.version` 缺失或不是有效的语义化版本。注意：部署到 Production 时版本号必须严格高于上一版本、Development 要求不低于原版本，这一比较无法机械判断，需在部署时人工确认目标环境的当前版本。
 
